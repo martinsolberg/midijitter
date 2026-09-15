@@ -1,6 +1,7 @@
 mod capture;
 mod common;
 mod enumerate;
+mod filter_capture;
 pub mod timing;
 
 use crate::AppError;
