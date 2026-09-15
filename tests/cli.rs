@@ -31,6 +31,28 @@ fn duplicate_display_name_requires_a_stable_source_identity() {
     );
 }
 
+#[test]
+fn source_selection_errors_have_documented_exit_codes() {
+    let source = source("USB MIDI", "usb-midi", "out", Some("101"), 10, 20);
+
+    let no_source = select_source(&[], "USB MIDI").expect_err("empty list must reject selection");
+    let not_found = select_source(std::slice::from_ref(&source), "missing")
+        .expect_err("unknown source must be rejected");
+    let ambiguous = select_source(&[source.clone(), source], "USB MIDI")
+        .expect_err("duplicate displayed name must be rejected");
+    let permission = AppError::PipeWirePermissionDenied {
+        detail: "access denied".to_owned(),
+    };
+
+    assert!(matches!(no_source, AppError::NoSource));
+    assert_eq!(no_source.exit_code(), 5);
+    assert!(matches!(not_found, AppError::SourceNotFound { .. }));
+    assert_eq!(not_found.exit_code(), 5);
+    assert!(matches!(ambiguous, AppError::AmbiguousSource { .. }));
+    assert_eq!(ambiguous.exit_code(), 5);
+    assert_eq!(permission.exit_code(), 4);
+}
+
 fn source(
     display_name: &str,
     node_name: &str,

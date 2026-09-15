@@ -95,13 +95,13 @@ pub(super) fn midi_sources() -> Result<Vec<MidiSource>, AppError> {
         });
     }
 
-    drop(_core_listener);
-    drop(_registry_listener);
-    let mut sources = Rc::try_unwrap(sources)
-        .expect("PipeWire registry listener must release source collection")
-        .into_inner();
+    let mut sources = source_snapshot(&sources);
     sources.sort_by_key(MidiSource::stable_identity);
     Ok(sources)
+}
+
+fn source_snapshot(sources: &Rc<RefCell<Vec<MidiSource>>>) -> Vec<MidiSource> {
+    sources.borrow().clone()
 }
 
 fn pipewire_unavailable(error: pw::Error) -> AppError {
@@ -115,5 +115,27 @@ fn pipewire_remote_error(message: String) -> AppError {
         AppError::PipeWirePermissionDenied { detail: message }
     } else {
         AppError::PipeWireUnavailable { detail: message }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_snapshot_does_not_require_sole_rc_ownership() {
+        let sources = Rc::new(RefCell::new(vec![MidiSource {
+            display_name: "USB MIDI".to_owned(),
+            node_name: "usb-midi".to_owned(),
+            port_name: "out".to_owned(),
+            object_serial: Some("101".to_owned()),
+            node_id: 10,
+            port_id: 20,
+        }]));
+        let retained_callback_reference = Rc::clone(&sources);
+
+        let snapshot = source_snapshot(&sources);
+
+        assert_eq!(snapshot, *retained_callback_reference.borrow());
     }
 }
