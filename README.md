@@ -99,7 +99,15 @@ graph-position timestamped capture format.
 
 If WirePlumber on your system cannot auto-link MIDI ports (some setups fail
 with `no target node available`, and filter ports rely on session management
-for auto-linking), expose a PipeWire MIDI sink and link it yourself:
+for auto-linking), expose a PipeWire MIDI sink and link it yourself.
+
+1. Find the source port id (ids shift between sessions, always re-check):
+
+```bash
+midijitter devices
+```
+
+2. Start the capture — it waits for you to create the link:
 
 ```bash
 midijitter record \
@@ -109,9 +117,16 @@ midijitter record \
   --manual-connect
 ```
 
-Then connect the source port to the `midijitter-capture:input_1` port in a
-patchbay such as `qpwgraph` or with `pw-link`. Recording starts automatically
-once the link is active.
+3. In another terminal, link the source port to the exposed sink input
+(e.g. source port `114`; use the id from step 1, not this example):
+
+```bash
+pw-link 114 $(pw-cli ls Port | awk '/^\tid /{id=$2; gsub(/,/,"",id)} /port.alias = "midijitter-capture:input_1"/{print id; exit}')
+```
+
+or connect them in a patchbay such as `qpwgraph`. The app prints
+`Link active: recording started.` once the link streams. Recording ends on
+its own after `--duration`, or cleanly on `Ctrl-C`.
 
 ### Analyze
 
@@ -163,6 +178,22 @@ periodic jitter, missing/duplicate rates, linear drift (`10ppm/s`), and a
 midijitter rolling capture.json --window 5    # rolling BPM over a 5 s window
 ```
 
+## Startup transient
+
+Linking a new reader to a PipeWire MIDI port typically flushes a backlog of
+stale clock events (observed: ~65 events sharing one graph position at
+capture start). These are flagged as duplicates and excluded from the fit,
+but the first event anchors tick zero, so it can still dominate `Latest` and
+peak-to-peak. To mark the warm-up window as startup-transient — kept in the
+file, excluded from fit and statistics with explicit counts:
+
+```bash
+midijitter analyze capture.json --settle 1s
+```
+
+`--settle` accepts durations like `500ms` or `1s`; `0` (default) disables
+marking and reproduces the unflagged report exactly.
+
 ## Interpretation notes
 
 - Constant latency is removed by the fitted clock intercept; variable latency
@@ -171,6 +202,9 @@ midijitter rolling capture.json --window 5    # rolling BPM over a 5 s window
   is fitted, never assumed.
 - Missing/duplicate clocks and USB batching are part of the system under test
   and are preserved, not smoothed away.
+- Prefer RMS/P99 over peak-to-peak as the stability headline: a single
+  exceptional excursion (e.g. the startup flush above) dominates
+  peak-to-peak while telling you nothing about the clock population.
 
 ## Development
 
