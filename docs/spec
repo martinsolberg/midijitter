@@ -1,0 +1,2116 @@
+# MIDI Clock Jitter Benchmark
+
+## 1. Project objective
+
+Develop a native Linux application for accurately measuring and analyzing timing jitter in MIDI Clock streams.
+
+The program receives MIDI 1.0 Timing Clock messages (`0xF8`) from physical or virtual MIDI sources. MIDI Clock runs at **24 pulses per quarter note (24 PPQN)**.
+
+The application must:
+
+* capture incoming MIDI Clock events with timing information supplied by the Linux audio/MIDI stack;
+* use **PipeWire as the primary/default MIDI backend**;
+* preserve PipeWire graph timing information rather than merely timestamping userspace callback execution;
+* optionally support direct ALSA RawMIDI capture as a lower-level reference backend;
+* preserve raw captures so analysis can be repeated later;
+* estimate actual clock tempo rather than assuming nominal BPM;
+* compare measured timestamps against a fitted ideal 24-PPQN clock;
+* calculate phase jitter, period jitter, drift, anomalies and outliers;
+* detect likely missing or duplicate clock messages;
+* provide human-readable statistics;
+* export machine-readable data;
+* generate diagnostic plots;
+* eventually compare PipeWire and ALSA measurements of the same hardware setup.
+
+The application is intended primarily as an **engineering and benchmarking tool**, not as a general-purpose MIDI utility.
+
+Measurement integrity takes precedence over UI sophistication.
+
+---
+
+# 2. Primary measurement question
+
+The default PipeWire backend should answer:
+
+> How stable is this MIDI Clock stream as presented to applications using the normal PipeWire MIDI infrastructure on Linux?
+
+This is intentionally different from asking:
+
+> How stable is the source at the raw electrical/DIN output?
+
+or:
+
+> How stable are bytes at the lowest ALSA driver layer?
+
+The default measurement path is approximately:
+
+```text
+MIDI clock source
+        │
+        │ DIN / USB MIDI
+        ▼
+Linux kernel / ALSA
+        │
+        ▼
+ALSA Sequencer
+        │
+        ▼
+PipeWire ALSA MIDI bridge
+        │
+        ▼
+PipeWire MIDI port
+        │
+        ▼
+midijitter
+```
+
+Therefore the measurement includes timing characteristics introduced by the complete chain up to the PipeWire application boundary.
+
+Do not claim that results measure only the MIDI-generating hardware.
+
+---
+
+# 3. Target platform
+
+Primary target:
+
+* OS: Debian GNU/Linux 13 "Trixie"
+* Architecture: x86-64
+* Audio/MIDI system: PipeWire
+* Session manager: WirePlumber
+* Native PipeWire API preferred
+* ALSA available underneath PipeWire
+* Desktop/window manager is irrelevant to the application
+
+Example test hardware:
+
+* Focusrite Scarlett 18i20 3rd Gen
+* Elektron Octatrack
+* Elektron Digitakt
+* Elektron Digitone
+* other MIDI clock generators
+
+The application must not require:
+
+```text
+JACK
+Bitwig
+another DAW
+a graphical desktop
+```
+
+to operate.
+
+---
+
+# 4. Programming language
+
+Use **Rust**, current stable release.
+
+Reasons:
+
+* predictable native performance;
+* no garbage collector;
+* memory safety;
+* suitable PipeWire bindings;
+* suitable ALSA bindings;
+* straightforward standalone binary deployment;
+* appropriate for timing-sensitive code.
+
+Do not use Python for the timing-sensitive capture layer.
+
+Python may later be used externally for experimental analysis, but must not be required.
+
+---
+
+# 5. Principal dependencies
+
+Keep the dependency tree reasonably small.
+
+Suggested crates:
+
+```text
+pipewire
+libspa
+alsa
+clap
+serde
+serde_json
+csv
+anyhow or thiserror
+plotters
+libc
+```
+
+Optional:
+
+```text
+rayon
+```
+
+for offline analysis only.
+
+Do not introduce Tokio or another asynchronous runtime into the realtime/capture path unless a concrete need arises.
+
+---
+
+# 6. Backend architecture
+
+Implement capture through a backend abstraction.
+
+Conceptually:
+
+```text
+                    ┌─────────────────────┐
+                    │   CaptureBackend    │
+                    │       trait         │
+                    └─────────┬───────────┘
+                              │
+               ┌──────────────┴──────────────┐
+               │                             │
+      ┌────────▼────────┐           ┌────────▼────────┐
+      │ PipeWireBackend │           │ AlsaRawBackend  │
+      │                 │           │                 │
+      │ default         │           │ reference /     │
+      │                 │           │ diagnostic      │
+      └────────┬────────┘           └────────┬────────┘
+               │                             │
+               └──────────────┬──────────────┘
+                              ▼
+                     Normalized events
+                              │
+                              ▼
+                        Capture file
+                              │
+                              ▼
+                          Analyzer
+                              │
+          ┌───────────────────┼─────────────────┐
+          ▼                   ▼                 ▼
+        stats               plots             compare
+```
+
+Suggested trait concept:
+
+```rust
+trait CaptureBackend {
+    fn enumerate(&self) -> Result<Vec<MidiSource>>;
+    fn open(&self, source: &MidiSource) -> Result<Box<dyn CaptureStream>>;
+}
+```
+
+The analysis layer must be completely independent of PipeWire and ALSA.
+
+---
+
+# 7. Default backend: native PipeWire
+
+PipeWire must be the default capture backend.
+
+Use the **native PipeWire API**.
+
+Do not make the default path:
+
+```text
+JACK API
+    ↓
+PipeWire JACK compatibility
+```
+
+and do not depend on JACK compatibility libraries.
+
+The PipeWire backend should connect to the selected PipeWire MIDI source/port and consume MIDI control events directly from the PipeWire graph.
+
+Example CLI:
+
+```bash
+midijitter record \
+    --backend pipewire \
+    --source "Scarlett 18i20 MIDI"
+```
+
+If no backend is specified:
+
+```text
+--backend pipewire
+```
+
+is implied.
+
+---
+
+# 8. Critical PipeWire timing requirement
+
+Do NOT determine event timing by calling:
+
+```text
+Instant::now()
+clock_gettime()
+```
+
+when the PipeWire callback happens.
+
+The callback execution time is not the MIDI event time.
+
+PipeWire MIDI events are carried as timed control events within a graph cycle.
+
+Each MIDI event has an offset within the current PipeWire graph cycle.
+
+The application's timestamp must therefore be derived from:
+
+```text
+PipeWire graph position
++
+event offset within graph cycle
+```
+
+Conceptually:
+
+```text
+PipeWire graph cycle
+
+sample 0
+│
+├──────────────
+│
+├─ sample 137      ← MIDI F8
+│
+│
+├──────────────
+│
+├─ sample 621      ← another MIDI event
+│
+│
+└─ sample 1023
+```
+
+If the graph cycle begins at sample position:
+
+```text
+Pcycle
+```
+
+and the MIDI event has offset:
+
+```text
+Oevent
+```
+
+then:
+
+```text
+Pevent = Pcycle + Oevent
+```
+
+This graph position is the primary raw timestamp representation for PipeWire.
+
+Do not quantize MIDI events to graph-cycle boundaries.
+
+---
+
+# 9. PipeWire graph-time conversion
+
+Store the raw graph position whenever possible.
+
+For analysis, convert graph position to relative time.
+
+For a graph rate of:
+
+```text
+48000 Hz
+```
+
+one sample corresponds to approximately:
+
+```text
+20.833333 µs
+```
+
+Conceptually:
+
+```text
+time_seconds = graph_position / sample_rate
+```
+
+More generally use the rate information reported by PipeWire.
+
+Do not hard-code 48 kHz.
+
+If PipeWire exposes graph timing as a rational rate:
+
+```text
+rate.num
+rate.denom
+```
+
+preserve that exact representation in the capture.
+
+The normalized event timestamp may then be represented in integer nanoseconds for the common analysis layer.
+
+---
+
+# 10. PipeWire graph quantum
+
+The application must understand that PipeWire quantum is **not MIDI timestamp resolution**.
+
+For example:
+
+```text
+sample rate = 48000 Hz
+quantum     = 1024 samples
+```
+
+gives a graph cycle duration of approximately:
+
+```text
+21.333 ms
+```
+
+but MIDI events inside that cycle retain their event offset.
+
+Therefore an `F8` event occurring at sample 317 must remain distinguishable from one at sample 851.
+
+Do not assign all MIDI events in one PipeWire cycle the same timestamp.
+
+---
+
+# 11. PipeWire timing metadata
+
+For every capture, record at minimum:
+
+```text
+backend = pipewire
+PipeWire version
+selected source/node/port
+graph sample rate
+graph quantum
+timestamp representation
+application version
+capture format version
+```
+
+Where practical also record:
+
+```text
+PipeWire node ID
+PipeWire port ID
+graph driver information
+process/node name
+realtime scheduling state
+```
+
+If the graph rate or graph quantum changes during capture:
+
+* preserve the change;
+* record when it occurred;
+* make analysis rate-aware;
+* print a warning in the final report.
+
+Do not silently assume graph parameters were constant.
+
+---
+
+# 12. PipeWire raw event representation
+
+Preserve more than only the derived timestamp.
+
+Suggested PipeWire event structure:
+
+```rust
+struct PipeWireTimestamp {
+    cycle_position: i64,
+    event_offset: u32,
+    event_position: i64,
+    rate_num: u32,
+    rate_denom: u32,
+    quantum: u32,
+}
+```
+
+Normalized capture event:
+
+```rust
+struct CapturedEvent {
+    sequence: u64,
+    timestamp_ns: i128,
+    timestamp_metadata: TimestampMetadata,
+    event: MidiEvent,
+}
+```
+
+Example:
+
+```rust
+enum TimestampMetadata {
+    PipeWire(PipeWireTimestamp),
+    Alsa(AlsaTimestamp),
+}
+```
+
+Store both:
+
+```text
+raw PipeWire position
+```
+
+and:
+
+```text
+normalized timestamp_ns
+```
+
+so future analysis code can inspect the original graph timing.
+
+---
+
+# 13. ALSA RawMIDI backend
+
+Implement ALSA RawMIDI as an optional reference backend.
+
+Example:
+
+```bash
+midijitter record \
+    --backend alsa-raw \
+    --device hw:1,0,0
+```
+
+This backend is useful for:
+
+* measuring MIDI closer to the hardware/driver layer;
+* comparing PipeWire timing with lower-level ALSA timing;
+* diagnosing whether jitter originates before or after PipeWire;
+* validating the PipeWire backend.
+
+Prefer ALSA timestamped RawMIDI reads.
+
+Configure:
+
+```text
+timestamped input
+CLOCK_MONOTONIC_RAW
+```
+
+Conceptually use ALSA functionality equivalent to:
+
+```text
+SND_RAWMIDI_READ_TSTAMP
+SND_RAWMIDI_CLOCK_MONOTONIC_RAW
+snd_rawmidi_tread()
+```
+
+Do not merely:
+
+```text
+read MIDI byte
+→ Instant::now()
+```
+
+unless timestamped RawMIDI is unavailable.
+
+---
+
+# 14. ALSA fallback timestamping
+
+If timestamped RawMIDI is unsupported, optionally support:
+
+```text
+clock_gettime(CLOCK_MONOTONIC_RAW)
+```
+
+immediately after receiving the byte.
+
+However:
+
+1. print a prominent warning;
+2. store the timestamp method in capture metadata;
+3. label the result as userspace-timestamped;
+4. never silently fall back;
+5. do not compare it as equivalent to kernel timestamping without warning.
+
+Never use:
+
+```text
+CLOCK_REALTIME
+SystemTime
+UTC time
+wall clock
+```
+
+for jitter calculations.
+
+---
+
+# 15. Backend comparison
+
+A major eventual feature is comparing the two measurement layers.
+
+Example:
+
+```text
+hardware source
+       │
+       ├──── ALSA RawMIDI measurement
+       │
+       └──── PipeWire measurement
+```
+
+Typical interpretation:
+
+```text
+ALSA phase RMS       0.35 ms
+PipeWire phase RMS   0.38 ms
+```
+
+suggests little additional variability at the PipeWire application boundary.
+
+Whereas:
+
+```text
+ALSA phase RMS       0.35 ms
+PipeWire phase RMS   1.80 ms
+```
+
+would justify further investigation.
+
+Do not assume that the difference between these two numbers can automatically be interpreted as "PipeWire jitter" unless both captures can be synchronized appropriately.
+
+Independent capture runs include source variability.
+
+---
+
+# 16. MIDI messages of interest
+
+Primary event:
+
+```text
+0xF8 MIDI Timing Clock
+```
+
+Also recognize and record:
+
+```text
+0xFA Start
+0xFB Continue
+0xFC Stop
+```
+
+Optionally record:
+
+```text
+0xFE Active Sensing
+```
+
+Transport events should not be included in clock-jitter statistics.
+
+MIDI realtime messages may occur between bytes of another MIDI message.
+
+Do not write parsing logic that assumes `F8` only appears between complete MIDI messages.
+
+---
+
+# 17. Capture architecture
+
+Keep capture work minimal.
+
+PipeWire:
+
+```text
+PipeWire MIDI source
+       │
+       ▼
+PipeWire process callback
+       │
+       ├─ read SPA MIDI event
+       ├─ identify F8/FA/FB/FC
+       ├─ obtain event offset
+       ├─ obtain graph position
+       └─ append capture record
+               │
+               ▼
+          in-memory buffer
+               │
+               ▼
+          capture file
+```
+
+Do NOT perform in the process callback:
+
+```text
+plotting
+JSON serialization
+CSV generation
+statistical fitting
+console logging per event
+FFT
+UI rendering
+filesystem writes per event
+```
+
+For ordinary capture durations, storing events in RAM and writing them after capture is preferred.
+
+At 120 BPM:
+
+```text
+120 × 24 = 2880 F8 messages/minute
+```
+
+A ten-minute capture contains only:
+
+```text
+28,800 clock events
+```
+
+which is trivial in memory.
+
+---
+
+# 18. Threading and realtime considerations
+
+The PipeWire processing callback executes in the PipeWire realtime processing environment.
+
+Therefore:
+
+* do minimal work;
+* avoid blocking;
+* avoid unbounded allocations;
+* avoid file I/O;
+* avoid locking mutexes shared with UI or other threads;
+* avoid stdout/stderr output;
+* avoid sleeping;
+* avoid arbitrary system calls.
+
+Prefer:
+
+```text
+preallocated Vec
+fixed-size/ring buffer
+lock-free handoff if necessary
+```
+
+For the MVP, direct append into preallocated capture memory may be sufficient if it is safe in the chosen PipeWire Rust API.
+
+If capture data is handed to another thread:
+
+```text
+PipeWire RT thread
+       │
+       ▼
+bounded lock-free queue
+       │
+       ▼
+capture/storage thread
+```
+
+Never let storage or UI operations block PipeWire processing.
+
+---
+
+# 19. Common normalized timestamp representation
+
+The analyzer should consume backend-independent events.
+
+Suggested representation:
+
+```rust
+struct CapturedEvent {
+    sequence: u64,
+    timestamp_ns: i128,
+    event: MidiEvent,
+    timestamp_metadata: TimestampMetadata,
+}
+```
+
+Normalize all event times relative to the beginning of the capture.
+
+Example:
+
+```text
+0 ns
+20,842,137 ns
+41,676,922 ns
+...
+```
+
+Use integer representation as long as possible.
+
+Convert to `f64` only during numerical/statistical analysis.
+
+---
+
+# 20. Capture file format
+
+Define a versioned JSON capture format for v0.1.
+
+Example conceptual structure:
+
+```json
+{
+  "format_version": 1,
+  "application_version": "...",
+  "backend": "pipewire",
+  "source": "...",
+  "timestamp_method": "pipewire-graph-position",
+  "ppqn": 24,
+  "environment": {
+    "pipewire_version": "...",
+    "sample_rate": 48000,
+    "quantum": 1024
+  },
+  "events": [
+    {
+      "sequence": 0,
+      "timestamp_ns": 0,
+      "type": "clock",
+      "pipewire": {
+        "cycle_position": 29134848,
+        "event_offset": 317,
+        "event_position": 29135165,
+        "rate_num": 1,
+        "rate_denom": 48000,
+        "quantum": 1024
+      }
+    }
+  ]
+}
+```
+
+Do not depend on wall-clock time for analysis.
+
+Human-readable start time may optionally be stored as metadata only.
+
+---
+
+# 21. CSV export
+
+Support analyzed CSV output.
+
+Suggested columns:
+
+```text
+event
+tick_index
+time_s
+interval_ms
+ideal_time_s
+phase_error_ms
+period_error_ms
+backend
+cycle_position
+event_offset
+event_position
+```
+
+Backend-specific columns may be blank when not applicable.
+
+---
+
+# 22. Ideal clock model
+
+For a perfectly stable clock:
+
+```text
+t[n] = a + nT
+```
+
+where:
+
+```text
+t[n] = observed time of tick n
+a    = fitted time origin
+T    = fitted MIDI Clock period
+n    = MIDI Clock tick index
+```
+
+Because MIDI Clock is 24 PPQN:
+
+```text
+BPM = 60 / (24 × T)
+```
+
+At 120 BPM:
+
+```text
+quarter note = 500 ms
+
+500 / 24
+= 20.833333... ms per F8
+```
+
+Do not require or assume nominal BPM.
+
+A perfectly stable source running at:
+
+```text
+119.98 BPM
+```
+
+should report near-zero jitter.
+
+It should not accumulate artificial phase error against an assumed 120 BPM reference.
+
+---
+
+# 23. Clock fitting
+
+Fit:
+
+```text
+t[n] = a + nT
+```
+
+using least-squares linear regression once tick indices have been established.
+
+The primary phase residual is:
+
+```text
+phase_error[n]
+    = t[n] - (a + nT)
+```
+
+The regression removes:
+
+* constant latency;
+* arbitrary capture start phase;
+* mean tempo error.
+
+This is intentional.
+
+The primary benchmark concerns timing stability around the source's measured average clock.
+
+---
+
+# 24. Missing tick detection
+
+Do not assume every received `F8` corresponds to a consecutive ideal tick.
+
+Suggested algorithm:
+
+1. Calculate adjacent intervals.
+2. Obtain a robust initial period estimate using the median.
+3. Calculate:
+
+```text
+step = round(interval / T)
+```
+
+4. Normal:
+
+```text
+step = 1
+```
+
+5. Possible missing clock:
+
+```text
+step > 1
+```
+
+6. Infer:
+
+```text
+step - 1
+```
+
+missing events only when the interval is sufficiently close to an integer multiple of `T`.
+
+7. Build ideal tick indices accordingly.
+
+Example:
+
+```text
+received event number:
+0 1 2 3 4 5
+
+ideal MIDI tick:
+0 1 2 3 5 6
+```
+
+8. Fit the clock model.
+9. Re-evaluate classifications against fitted `T`.
+10. Stop when classification stabilizes.
+
+Tolerance must be configurable.
+
+Do not classify arbitrary large jitter as missing events too aggressively.
+
+---
+
+# 25. Duplicate/anomalous event detection
+
+Flag suspiciously short intervals.
+
+Potential causes include:
+
+* duplicate `F8`;
+* MIDI source fault;
+* interface behaviour;
+* PipeWire/ALSA event batching;
+* timestamp anomalies.
+
+Do not silently delete these events.
+
+Preserve them in the capture and mark them.
+
+If excluded from any derived statistics, report that exclusion explicitly.
+
+---
+
+# 26. Primary jitter metrics
+
+Report phase jitter and period jitter separately.
+
+## Phase error
+
+```text
+phase_error[n]
+    = measured_time[n] - ideal_time[n]
+```
+
+Report:
+
+```text
+mean
+standard deviation
+RMS
+mean absolute error
+median absolute error
+P95 absolute error
+P99 absolute error
+earliest / minimum
+latest / maximum
+peak-to-peak
+```
+
+Units for presentation:
+
+```text
+milliseconds
+```
+
+Internal precision:
+
+```text
+nanoseconds or graph samples
+```
+
+## Period error
+
+For adjacent valid clock ticks:
+
+```text
+measured_period[n]
+    = t[n] - t[n-1]
+
+period_error[n]
+    = measured_period[n] - T
+```
+
+Report:
+
+```text
+mean interval
+standard deviation
+RMS period error
+minimum interval
+maximum interval
+P95 absolute period error
+P99 absolute period error
+```
+
+Intervals spanning inferred missing ticks must not be treated as normal one-tick intervals.
+
+---
+
+# 27. Phase versus period jitter
+
+Do not conflate them.
+
+Example A:
+
+```text
+phase:
++1 ms
++1 ms
++1 ms
++1 ms
+```
+
+This represents a phase offset but essentially no period instability.
+
+Example B:
+
+```text
+phase:
++1 ms
+-1 ms
++1 ms
+-1 ms
+```
+
+This has much stronger tick-to-tick period variation.
+
+Both metrics are required.
+
+---
+
+# 28. Additional metrics
+
+Report:
+
+```text
+backend
+MIDI source
+number of F8 messages
+capture duration
+measured BPM
+fitted F8 period
+missing clocks
+duplicate/anomalous clocks
+Start count
+Continue count
+Stop count
+timestamp method
+```
+
+PipeWire-specific:
+
+```text
+sample rate
+quantum
+rate changes
+quantum changes
+PipeWire version
+```
+
+Possible later metrics:
+
+```text
+rolling BPM
+windowed phase RMS
+long-term drift
+autocorrelation
+Allan deviation
+FFT / jitter spectrum
+```
+
+---
+
+# 29. Visualization
+
+Generate visualizations offline.
+
+Required v0.1 plots:
+
+## Phase error
+
+X:
+
+```text
+capture time
+```
+
+Y:
+
+```text
+phase error in ms
+```
+
+Draw zero reference.
+
+## Inter-clock interval
+
+X:
+
+```text
+capture time
+```
+
+Y:
+
+```text
+F8 interval in ms
+```
+
+Draw fitted period as reference.
+
+## Phase histogram
+
+X:
+
+```text
+phase error
+```
+
+Y:
+
+```text
+count or percentage
+```
+
+Recommended later:
+
+```text
+rolling BPM
+period-error histogram
+phase-error autocorrelation
+FFT / jitter spectrum
+```
+
+Export:
+
+```text
+PNG
+```
+
+SVG support is desirable.
+
+---
+
+# 30. CLI design
+
+Executable:
+
+```text
+midijitter
+```
+
+Required commands:
+
+```text
+midijitter devices
+midijitter record
+midijitter analyze
+midijitter plot
+```
+
+Recommended later:
+
+```text
+midijitter compare
+midijitter simulate
+```
+
+---
+
+# 31. Device/source enumeration
+
+Default:
+
+```bash
+midijitter devices
+```
+
+should enumerate PipeWire MIDI sources.
+
+Example:
+
+```text
+PipeWire MIDI sources:
+
+42   Scarlett 18i20 MIDI 1
+57   Midi Through
+81   Elektron Digitakt MIDI
+```
+
+Allow:
+
+```bash
+midijitter devices --backend pipewire
+```
+
+and:
+
+```bash
+midijitter devices --backend alsa-raw
+```
+
+The ALSA version should display RawMIDI device identifiers such as:
+
+```text
+hw:1,0,0
+```
+
+---
+
+# 32. Recording
+
+Default:
+
+```bash
+midijitter record \
+    --source "Scarlett 18i20 MIDI" \
+    --duration 60 \
+    --output octatrack.json
+```
+
+Equivalent explicit invocation:
+
+```bash
+midijitter record \
+    --backend pipewire \
+    --source "Scarlett 18i20 MIDI" \
+    --duration 60 \
+    --output octatrack.json
+```
+
+Example output:
+
+```text
+Backend: PipeWire
+Source: Scarlett 18i20 MIDI
+Timestamping: PipeWire graph position + event offset
+Graph: 48000 Hz / quantum 1024
+
+Recording...
+
+Captured: 2881 MIDI clocks
+Duration: 60.01 s
+
+Saved: octatrack.json
+```
+
+Allow Ctrl-C to terminate cleanly.
+
+Also support:
+
+```text
+--ticks 10000
+```
+
+Optional future feature:
+
+```text
+--wait-for-start
+```
+
+---
+
+# 33. Analysis
+
+Example:
+
+```bash
+midijitter analyze octatrack.json
+```
+
+Example output:
+
+```text
+MIDI Clock Jitter Analysis
+==========================
+
+Input
+  Backend                PipeWire
+  Source                 Scarlett 18i20 MIDI
+  Timestamp source       PipeWire graph timing
+  Sample rate            48000 Hz
+  Quantum                1024
+  Clock events           2881
+  Duration               60.01 s
+  Missing clocks         0
+  Anomalous clocks       0
+
+Clock
+  PPQN                   24
+  Measured BPM           119.9987
+  Fitted period          20.83356 ms
+
+Phase jitter
+  RMS                    0.412 ms
+  Standard deviation     0.412 ms
+  Mean absolute          0.323 ms
+  P95 absolute           0.801 ms
+  P99 absolute           1.132 ms
+  Earliest              -1.247 ms
+  Latest                +1.381 ms
+  Peak-to-peak           2.628 ms
+
+Period jitter
+  Standard deviation     0.581 ms
+  P95 absolute           1.104 ms
+  P99 absolute           1.572 ms
+  Minimum interval      19.241 ms
+  Maximum interval      22.316 ms
+```
+
+Support:
+
+```text
+--json
+--csv <file>
+```
+
+---
+
+# 34. Comparison command
+
+Second-stage feature:
+
+```bash
+midijitter compare \
+    octatrack.json \
+    digitakt.json \
+    bitwig.json
+```
+
+Example:
+
+```text
+                    Octatrack   Digitakt   Bitwig
+
+Backend             PipeWire    PipeWire   PipeWire
+Phase RMS            0.42 ms     0.71 ms    1.83 ms
+Phase P99            1.13 ms     1.92 ms    4.77 ms
+Period σ             0.58 ms     0.96 ms    2.41 ms
+Peak-to-peak         2.63 ms     4.12 ms   10.84 ms
+Missing ticks             0           0          0
+```
+
+Warn if captures differ in potentially important environmental variables such as:
+
+```text
+receiving interface
+sample rate
+PipeWire version
+backend
+```
+
+---
+
+# 35. PipeWire versus ALSA comparison
+
+Support explicit comparison of backend results.
+
+Example:
+
+```text
+                    ALSA Raw      PipeWire
+
+Phase RMS             0.36 ms       0.41 ms
+Phase P99             1.02 ms       1.16 ms
+Period σ              0.52 ms       0.58 ms
+```
+
+However, clearly state:
+
+> Results from independent runs cannot isolate PipeWire's contribution exactly because the source itself may vary between runs.
+
+A future simultaneous dual-capture mode may be investigated, but is outside v0.1.
+
+---
+
+# 36. Realtime scheduling
+
+Do not require the application to manually request `SCHED_FIFO` in normal PipeWire mode.
+
+The PipeWire process thread should use PipeWire's normal realtime infrastructure.
+
+Record the observed scheduling configuration if practical.
+
+For ALSA RawMIDI, optional experimental functionality may later provide:
+
+```text
+--realtime
+--cpu <n>
+```
+
+with:
+
+```text
+SCHED_FIFO
+CPU affinity
+mlockall()
+```
+
+but these are diagnostic options rather than requirements.
+
+Failure to obtain RT privileges must not prevent ordinary operation.
+
+---
+
+# 37. User interface scope
+
+Version 0.1 is CLI-only.
+
+Do not begin with:
+
+```text
+GTK
+Qt
+Tauri
+Electron
+browser UI
+```
+
+The first priority is trustworthy capture and analysis.
+
+Organize the code so a graphical frontend can later reuse the core library.
+
+Suggested structure:
+
+```text
+src/
+    main.rs
+    lib.rs
+    cli.rs
+
+    backend/
+        mod.rs
+
+        pipewire/
+            mod.rs
+            enumerate.rs
+            capture.rs
+            timing.rs
+
+        alsa/
+            mod.rs
+            enumerate.rs
+            capture.rs
+            timing.rs
+
+    capture/
+        mod.rs
+        event.rs
+        format.rs
+        metadata.rs
+
+    analysis/
+        mod.rs
+        fit.rs
+        indexing.rs
+        jitter.rs
+        statistics.rs
+        anomalies.rs
+
+    plot/
+        mod.rs
+        phase.rs
+        period.rs
+        histogram.rs
+
+    output/
+        mod.rs
+        text.rs
+        json.rs
+        csv.rs
+```
+
+Keep backend code out of the analyzer.
+
+---
+
+# 38. Audibility and interpretation
+
+Do not claim that:
+
+```text
+2 ms F8 jitter
+```
+
+necessarily produces:
+
+```text
+2 ms note timing jitter
+```
+
+A receiving sequencer may implement:
+
+```text
+clock smoothing
+PLL
+tempo estimation
+phase correction
+buffering
+```
+
+which can significantly change how raw F8 jitter propagates to musical events.
+
+Therefore the application measures:
+
+> MIDI Clock timing stability at the selected Linux measurement boundary.
+
+It does not directly measure audible timing performance.
+
+Avoid categorical labels such as:
+
+```text
+audible
+inaudible
+good
+bad
+```
+
+in v0.1.
+
+Prefer raw numerical statistics.
+
+---
+
+# 39. USB/interface considerations
+
+USB MIDI interfaces may deliver events in bursts or batches.
+
+If PipeWire or ALSA reports events with equal or unusual timing:
+
+* preserve the values exactly;
+* do not artificially spread them;
+* flag suspicious patterns if appropriate.
+
+Such behaviour may itself be part of the system under test.
+
+Do not attempt to mathematically subtract:
+
+```text
+USB transport delay
+DIN serialization time
+interface latency
+PipeWire latency
+```
+
+Constant latency is removed naturally by the fitted clock intercept.
+
+Variable latency is part of the observed jitter.
+
+---
+
+# 40. Synthetic validation
+
+Analysis code must have extensive backend-independent tests.
+
+## Perfect 120 BPM
+
+Generate:
+
+```text
+20.833333333 ms
+```
+
+spacing.
+
+Expect:
+
+```text
+BPM ≈ 120
+phase jitter ≈ 0
+period jitter ≈ 0
+missing = 0
+```
+
+## Perfect 119 BPM
+
+Expect:
+
+```text
+BPM ≈ 119
+jitter ≈ 0
+```
+
+Do not report tempo difference from 120 BPM as jitter.
+
+## Gaussian jitter
+
+Inject:
+
+```text
+σ = 1 ms
+```
+
+Verify recovered statistics.
+
+## Alternating jitter
+
+Generate:
+
+```text
++1 ms
+-1 ms
++1 ms
+-1 ms
+```
+
+Verify phase and period metrics.
+
+## Slow drift
+
+Gradually change period.
+
+Verify the phase plot exposes drift.
+
+## Missing clock
+
+Delete one tick.
+
+Verify:
+
+```text
+missing = 1
+```
+
+and subsequent timestamps are indexed correctly.
+
+## Duplicate clock
+
+Add one extra tick.
+
+Verify it is flagged.
+
+## Single outlier
+
+Delay one event by:
+
+```text
+10 ms
+```
+
+Verify maximum and percentiles.
+
+---
+
+# 41. PipeWire-specific validation
+
+Add tests for the graph-position conversion logic.
+
+Example:
+
+```text
+sample rate       48000
+cycle position    480000
+event offset      240
+```
+
+Expected event position:
+
+```text
+480240
+```
+
+Expected relative event time:
+
+```text
+10.005 s
+```
+
+Test different graph rates:
+
+```text
+44100
+48000
+96000
+```
+
+Test different quantum sizes:
+
+```text
+128
+256
+512
+1024
+2048
+```
+
+The same event graph position must produce the same time regardless of quantum segmentation.
+
+This is important: changing quantum must not itself quantize event timestamps.
+
+---
+
+# 42. Graph-rate-change tests
+
+Construct synthetic captures where graph rate changes during the test.
+
+Ensure either:
+
+1. event time conversion remains correct across segments;
+
+or
+
+2. v0.1 explicitly rejects such captures with a clear diagnostic.
+
+Do not silently analyze them under one assumed rate.
+
+---
+
+# 43. Replay/simulation
+
+Implement or plan:
+
+```bash
+midijitter simulate
+```
+
+Example:
+
+```bash
+midijitter simulate \
+    --bpm 120 \
+    --duration 60 \
+    --jitter-std 1ms \
+    --output synthetic.json
+```
+
+Useful parameters later:
+
+```text
+--periodic-jitter
+--missing-rate
+--duplicate-rate
+--drift
+--seed
+```
+
+This supports deterministic regression testing.
+
+---
+
+# 44. Capture metadata
+
+Store enough information for reproducibility.
+
+Common:
+
+```text
+application version
+capture format version
+backend
+source name
+duration
+PPQN
+event count
+kernel version
+```
+
+PipeWire:
+
+```text
+PipeWire version
+sample rate
+quantum
+node/port identity
+timestamp method
+rate/quantum changes
+```
+
+ALSA:
+
+```text
+ALSA device
+timestamp method
+clock type
+```
+
+Do not collect unnecessary identifying system information.
+
+---
+
+# 45. Error handling
+
+Provide clear errors for:
+
+```text
+PipeWire daemon unavailable
+PipeWire source not found
+PipeWire source disappeared
+PipeWire negotiation failed
+unsupported MIDI/control format
+device disconnected during capture
+ALSA device unavailable
+device busy
+permission denied
+timestamp mode unsupported
+no F8 messages received
+too few MIDI Clock events
+invalid capture file
+unsupported capture format
+graph-rate transition unsupported
+```
+
+Expected runtime errors must not cause panics.
+
+---
+
+# 46. Minimum capture duration
+
+Short recordings may be useful for debugging, but reliable percentile statistics require enough events.
+
+Warn for very short captures.
+
+Example:
+
+```text
+Warning: only 96 MIDI Clock events were captured.
+Use a longer capture for meaningful percentile statistics.
+```
+
+Recommended normal test:
+
+```text
+60 seconds
+```
+
+Recommended detailed test:
+
+```text
+5–10 minutes
+```
+
+---
+
+# 47. Performance requirements
+
+MIDI Clock event rates are extremely low relative to modern CPU capabilities.
+
+Nevertheless, the PipeWire callback must follow realtime-safe principles.
+
+Avoid:
+
+```text
+filesystem access
+stdout
+stderr
+JSON generation
+plotting
+blocking locks
+sleep
+network access
+dynamic configuration queries
+```
+
+inside the processing callback.
+
+Measurement correctness matters more than throughput.
+
+---
+
+# 48. MVP implementation order
+
+## Milestone 1 — PipeWire discovery
+
+Implement:
+
+```bash
+midijitter devices
+```
+
+List PipeWire MIDI sources.
+
+Verify Scarlett MIDI input is visible.
+
+## Milestone 2 — Native PipeWire capture
+
+Connect to a PipeWire MIDI source.
+
+Receive MIDI control events.
+
+Identify:
+
+```text
+F8
+FA
+FB
+FC
+```
+
+Extract:
+
+```text
+graph cycle position
+event offset
+event graph position
+graph rate
+```
+
+## Milestone 3 — Verify timing semantics
+
+Log a short diagnostic capture outside the realtime callback.
+
+Confirm that incoming MIDI Clock messages show sensible graph offsets and positions.
+
+Verify multiple events in one graph cycle retain distinct offsets.
+
+## Milestone 4 — Capture format
+
+Implement:
+
+```bash
+midijitter record
+```
+
+Store raw PipeWire timing metadata and normalized timestamps.
+
+## Milestone 5 — Analyzer
+
+Implement:
+
+```text
+robust initial period estimate
+tick indexing
+linear fit
+measured BPM
+phase residuals
+period residuals
+statistics
+```
+
+## Milestone 6 — Missing/anomalous clocks
+
+Implement robust missing and duplicate detection.
+
+## Milestone 7 — Plotting
+
+Implement:
+
+```text
+phase plot
+period plot
+phase histogram
+```
+
+## Milestone 8 — ALSA backend
+
+Implement ALSA RawMIDI timestamp capture.
+
+Do not delay the PipeWire MVP waiting for this backend.
+
+## Milestone 9 — Backend comparison
+
+Add comparison functionality.
+
+## Milestone 10 — Advanced timing analysis
+
+Consider:
+
+```text
+autocorrelation
+rolling metrics
+FFT
+Allan deviation
+```
+
+---
+
+# 49. Definition of done for v0.1
+
+Version 0.1 is complete when this workflow works on Debian 13 with PipeWire:
+
+```bash
+midijitter devices
+```
+
+lists PipeWire MIDI sources.
+
+Then:
+
+```bash
+midijitter record \
+    --source "Scarlett 18i20 MIDI" \
+    --duration 60 \
+    --output capture.json
+```
+
+records MIDI Clock using:
+
+```text
+PipeWire graph position + MIDI event offset
+```
+
+and preserves the raw graph timing metadata.
+
+Then:
+
+```bash
+midijitter analyze capture.json
+```
+
+reports:
+
+```text
+backend
+source
+event count
+duration
+sample rate
+quantum
+measured BPM
+fitted period
+
+phase:
+RMS
+standard deviation
+mean absolute
+P95
+P99
+minimum
+maximum
+peak-to-peak
+
+period:
+standard deviation
+P95
+P99
+minimum interval
+maximum interval
+
+missing ticks
+duplicate/anomalous ticks
+```
+
+Then:
+
+```bash
+midijitter plot capture.json --output-dir plots/
+```
+
+creates:
+
+```text
+phase.png
+period.png
+phase-histogram.png
+```
+
+Synthetic tests must verify that mathematically perfect timing produces effectively zero jitter.
+
+---
+
+# 50. Core design principle
+
+Preserve strict separation:
+
+```text
+MIDI SOURCE
+     ↓
+CAPTURE BACKEND
+     ↓
+RAW TIMING INFORMATION
+     ↓
+NORMALIZED EVENT TIMES
+     ↓
+CLOCK MODEL
+     ↓
+STATISTICAL ANALYSIS
+     ↓
+PRESENTATION
+```
+
+Never alter raw event timing to make results look cleaner.
+
+Never timestamp PipeWire MIDI based merely on when the userspace callback executes.
+
+Never quantize MIDI events to PipeWire cycle boundaries.
+
+Never silently discard anomalies.
+
+Never assume nominal BPM.
+
+Never use wall-clock time for jitter analysis.
+
+Never equate MIDI Clock jitter directly with audible note-on jitter.
+
+The primary PipeWire result should represent:
+
+> **the timing stability of MIDI Clock events as presented at the PipeWire application boundary, using the graph position and per-event timing information supplied by PipeWire.**
+
+The optional ALSA backend should provide a lower-level reference point for determining whether additional timing variability appears elsewhere in the Linux MIDI stack.
+
