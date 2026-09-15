@@ -94,10 +94,13 @@ path skips non-MIDI controls.
 - `--manual-connect` is supported on the filter path: connect with no
   target so `midijitter-capture:input_1` appears in the patchbay for
   manual linking.
-- If no link is present, the position clock still advances (it is the
-  graph clock, not link data), so the run ends cleanly with
-  `NoClockEvents` instead of hanging. The failure mode becomes "no
-  events", not "no stop".
+- If no link is present, the filter never reaches STREAMING and its
+  process callback never fires, so stream-time termination cannot end
+  the run. A wall-clock liveness bound on the main-loop thread
+  (`--duration` + 5 s grace, only while zero events are captured) ends
+  such runs cleanly with `NoClockEvents`. This bound never touches event
+  timestamps — it only bounds total runtime when no graph callbacks
+  arrive. The failure mode becomes "no events", not "no stop".
 
 ## 6. Error handling and RT discipline
 
