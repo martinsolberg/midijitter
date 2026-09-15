@@ -64,6 +64,11 @@ enum Command {
         /// Write per-event analysis rows to this CSV file.
         #[arg(long)]
         csv: Option<PathBuf>,
+        /// Mark events within this window of capture start as
+        /// startup-transient (kept in the file, excluded from fit and
+        /// statistics). Accepts durations like `500ms`, `1s`; `0` disables.
+        #[arg(long, default_value = "0")]
+        settle: String,
     },
     /// Render diagnostic plots from a capture file.
     Plot {
@@ -158,7 +163,12 @@ pub fn run() -> Result<(), AppError> {
             manual_connect,
             pw_api,
         ),
-        Command::Analyze { capture, json, csv } => run_analyze(capture, json, csv),
+        Command::Analyze {
+            capture,
+            json,
+            csv,
+            settle,
+        } => run_analyze(capture, json, csv, settle),
         Command::Plot {
             capture,
             output_dir,
@@ -336,8 +346,19 @@ fn run_record(
     Ok(())
 }
 
-fn run_analyze(capture: PathBuf, json: bool, csv: Option<PathBuf>) -> Result<(), AppError> {
+fn run_analyze(
+    capture: PathBuf,
+    json: bool,
+    csv: Option<PathBuf>,
+    settle: String,
+) -> Result<(), AppError> {
     let capture_file = CaptureFile::read_from_file(&capture)?;
+    // The duration parser accepts "0" and rejects negatives itself.
+    let settle_ns = crate::simulate::parse_duration_ns(&settle)? as i128;
+    let options = AnalysisOptions {
+        settle_ns,
+        ..AnalysisOptions::default()
+    };
     if !capture_file.transitions.is_empty() {
         let clocks = capture_file
             .events
@@ -350,7 +371,7 @@ fn run_analyze(capture: PathBuf, json: bool, csv: Option<PathBuf>) -> Result<(),
         return Err(AppError::GraphRateTransitionUnsupported);
     }
 
-    let analysis = analyze(&capture_file, AnalysisOptions::default())?;
+    let analysis = analyze(&capture_file, options)?;
     if json {
         println!(
             "{}",
