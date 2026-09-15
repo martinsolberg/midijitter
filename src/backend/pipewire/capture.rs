@@ -26,6 +26,7 @@ const STOP_OVERFLOW: u8 = 2;
 const STOP_UNSUPPORTED_FORMAT: u8 = 3;
 const STOP_SOURCE_GONE: u8 = 4;
 const STOP_NEGOTIATION_FAILURE: u8 = 5;
+const STOP_TIMESTAMP_ERROR: u8 = 6;
 
 struct CaptureState {
     parser: MidiParser,
@@ -180,6 +181,7 @@ pub(super) fn record(request: CaptureRequest) -> Result<CaptureFile, AppError> {
                 detail: "PipeWire reported an invalid graph rate or quantum".to_owned(),
             });
         }
+        STOP_TIMESTAMP_ERROR => return Err(AppError::TimestampArithmeticOverflow),
         _ => {
             return Err(AppError::PipeWireNegotiationFailed {
                 detail: "PipeWire capture stopped before a bounded termination condition"
@@ -335,7 +337,7 @@ unsafe fn record_spa_controls(
             }
             let bytes = std::slice::from_raw_parts(payload_start, value_size);
             let before = state.events.len();
-            if record_control_bytes(
+            if let Err(error) = record_control_bytes(
                 &mut state.parser,
                 &mut state.events,
                 cycle_position,
@@ -344,10 +346,11 @@ unsafe fn record_spa_controls(
                 rate_denom,
                 quantum,
                 bytes,
-            )
-            .is_err()
-            {
-                state.request_stop(STOP_OVERFLOW);
+            ) {
+                match error {
+                    AppError::CaptureOverflow => state.request_stop(STOP_OVERFLOW),
+                    _ => state.request_stop(STOP_TIMESTAMP_ERROR),
+                }
                 return Ok(());
             }
             state.clock_events += state.events[before..]
@@ -445,5 +448,63 @@ mod tests {
             assert_eq!(timestamp.rate_denom, 48_000);
             assert_eq!(timestamp.quantum, 256);
         }
+    }
+
+    #[test]
+    fn events_in_one_cycle_keep_distinct_offsets_and_positions() {
+        let mut parser = MidiParser::default();
+        let mut events: Vec<CapturedEvent> = Vec::with_capacity(2);
+
+        record_control_bytes(
+            &mut parser,
+            &mut events,
+            48_000,
+            317,
+            1,
+            48_000,
+            1024,
+            &[0xf8],
+        )
+        .unwrap();
+        record_control_bytes(
+            &mut parser,
+            &mut events,
+            48_000,
+            851,
+            1,
+            48_000,
+            1024,
+            &[0xf8],
+        )
+        .unwrap();
+
+        assert_eq!(events.len(), 2);
+        let TimestampMetadata::PipeWire(first) = &events[0].timestamp_metadata;
+        let TimestampMetadata::PipeWire(second) = &events[1].timestamp_metadata;
+        assert_eq!((first.event_offset, first.event_position), (317, 48_317));
+        assert_eq!((second.event_offset, second.event_position), (851, 48_851));
+        assert_ne!(first.event_position, second.event_position);
+    }
+
+    #[test]
+    fn timestamp_overflow_is_not_reported_as_capacity_overflow() {
+        let mut parser = MidiParser::default();
+        let mut events: Vec<CapturedEvent> = Vec::with_capacity(1);
+
+        let result = record_control_bytes(
+            &mut parser,
+            &mut events,
+            i64::MAX,
+            u32::MAX,
+            1,
+            48_000,
+            1024,
+            &[0xf8],
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::AppError::TimestampArithmeticOverflow)
+        ));
     }
 }
