@@ -26,6 +26,9 @@ pub enum AppError {
     #[error("no MIDI Clock messages were captured")]
     NoClockEvents,
 
+    #[error("plot rendering failed: {0}")]
+    Plot(String),
+
     #[error("clock analysis did not converge")]
     AnalysisDidNotConverge,
 

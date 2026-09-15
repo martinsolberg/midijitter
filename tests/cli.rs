@@ -306,6 +306,34 @@ fn analyze_rejects_missing_capture_files() {
 }
 
 #[test]
+fn plot_command_creates_the_three_required_pngs() {
+    let capture = temp_path("perfect-120.json");
+    std::fs::write(&capture, fixture_capture("perfect-120")).unwrap();
+    let dir = temp_path("plots");
+
+    let output = binary()
+        .args([
+            "plot",
+            &capture.to_string_lossy(),
+            "--output-dir",
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(output.status.success());
+    for file in ["phase.png", "period.png", "phase-histogram.png"] {
+        let path = dir.join(file);
+        let bytes = std::fs::read(&path).expect("plot file should exist");
+        assert!(bytes.len() > 1_000, "{file} should not be trivially small");
+        assert_eq!(
+            &bytes[..8],
+            &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+        );
+    }
+}
+
+#[test]
 fn record_requires_exactly_one_termination_condition() {
     let output = binary()
         .args(["record", "--source", "x", "--output", "out.json"])

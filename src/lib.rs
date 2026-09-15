@@ -4,6 +4,7 @@ pub mod capture;
 pub mod cli;
 pub mod error;
 pub mod output;
+pub mod plot;
 
 pub use analysis::{
     AnalysisOptions, AnalysisResult, AnalysisRow, ExclusionCounts, PeriodStatistics,

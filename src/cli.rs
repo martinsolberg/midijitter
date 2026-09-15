@@ -50,6 +50,14 @@ enum Command {
         #[arg(long)]
         csv: Option<PathBuf>,
     },
+    /// Render diagnostic plots from a capture file.
+    Plot {
+        /// Capture file produced by `record`.
+        capture: PathBuf,
+        /// Directory receiving phase.png, period.png and phase-histogram.png.
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -70,6 +78,10 @@ pub fn run() -> Result<(), AppError> {
             output,
         } => run_record(source, duration, ticks, output),
         Command::Analyze { capture, json, csv } => run_analyze(capture, json, csv),
+        Command::Plot {
+            capture,
+            output_dir,
+        } => run_plot(capture, output_dir),
     }
 }
 
@@ -168,6 +180,15 @@ fn run_analyze(capture: PathBuf, json: bool, csv: Option<PathBuf>) -> Result<(),
     }
     if let Some(csv_path) = csv {
         output::csv::write_csv_report(&capture_file, &analysis, &csv_path)?;
+    }
+    Ok(())
+}
+
+fn run_plot(capture: PathBuf, output_dir: PathBuf) -> Result<(), AppError> {
+    let capture_file = CaptureFile::read_from_file(&capture)?;
+    let analysis = analyze(&capture_file, AnalysisOptions::default())?;
+    for created in crate::plot::render_plots(&capture_file, &analysis, &output_dir)? {
+        println!("Created: {}", created.display());
     }
     Ok(())
 }
