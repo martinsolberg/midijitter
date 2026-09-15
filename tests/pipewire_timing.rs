@@ -1,4 +1,6 @@
-use midijitter::backend::pipewire::timing::{pipewire_event_position, relative_ns};
+use midijitter::backend::pipewire::timing::{
+    normalize_pipewire_event_timestamps, pipewire_event_position, relative_ns,
+};
 use midijitter::{
     AnalysisOptions, AppError, CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition,
     MidiEvent, PipeWireTimestamp, SourceMetadata, TimestampMetadata, analyze,
@@ -26,14 +28,23 @@ fn relative_ns_uses_the_supplied_rational_graph_rates() {
 }
 
 #[test]
-fn event_time_is_independent_of_graph_quantum_segmentation() {
-    for quantum in [128_i64, 256, 512, 1024, 2048] {
-        let cycle_position = (48_000 / quantum) * quantum;
-        let offset = u32::try_from(48_000 - cycle_position).unwrap();
-        let position = pipewire_event_position(cycle_position, offset).unwrap();
+fn normalization_uses_the_first_nonzero_event_epoch_for_every_rate_and_quantum() {
+    for rate_denom in [44_100_u32, 48_000, 96_000] {
+        for quantum in [128_u32, 256, 512, 1024, 2048] {
+            let first_position = 5_000_000_i64 + i64::from(quantum);
+            let later_position = first_position + i64::from(rate_denom);
+            let mut events = vec![
+                pipewire_clock_event(1, first_position, rate_denom, quantum),
+                pipewire_clock_event(2, later_position, rate_denom, quantum),
+            ];
 
-        assert_eq!(position, 48_000);
-        assert_eq!(relative_ns(position, 0, 1, 48_000).unwrap(), 1_000_000_000);
+            normalize_pipewire_event_timestamps(&mut events).unwrap();
+
+            assert_eq!(events[0].timestamp_ns, 0);
+            assert_eq!(events[1].timestamp_ns, 1_000_000_000);
+            assert_eq!(event_position(&events[0]), first_position);
+            assert_eq!(event_position(&events[1]), later_position);
+        }
     }
 }
 
@@ -90,4 +101,33 @@ fn clock_event(sequence: u64, event_position: i64, timestamp_ns: i128) -> Captur
             quantum: 256,
         }),
     }
+}
+
+fn pipewire_clock_event(
+    sequence: u64,
+    event_position: i64,
+    rate_denom: u32,
+    quantum: u32,
+) -> CapturedEvent {
+    let quantum_i64 = i64::from(quantum);
+    let cycle_position = (event_position / quantum_i64) * quantum_i64;
+
+    CapturedEvent {
+        sequence,
+        timestamp_ns: -1,
+        event: MidiEvent::Clock,
+        timestamp_metadata: TimestampMetadata::PipeWire(PipeWireTimestamp {
+            cycle_position,
+            event_offset: u32::try_from(event_position - cycle_position).unwrap(),
+            event_position,
+            rate_num: 1,
+            rate_denom,
+            quantum,
+        }),
+    }
+}
+
+fn event_position(event: &CapturedEvent) -> i64 {
+    let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata;
+    timestamp.event_position
 }

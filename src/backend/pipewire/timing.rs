@@ -1,4 +1,4 @@
-use crate::AppError;
+use crate::{AppError, CapturedEvent, TimestampMetadata};
 
 const NANOSECONDS_PER_SECOND: i128 = 1_000_000_000;
 
@@ -30,4 +30,31 @@ pub fn relative_ns(
         .and_then(|value| value.checked_mul(NANOSECONDS_PER_SECOND))
         .map(|value| value / i128::from(rate_denom))
         .ok_or(AppError::TimestampArithmeticOverflow)
+}
+
+/// Normalizes captured event timestamps against the first captured event.
+///
+/// The first event's absolute PipeWire graph position is the sole epoch
+/// selection point. Raw graph positions and all other timestamp metadata are
+/// retained on each event.
+pub fn normalize_pipewire_event_timestamps(events: &mut [CapturedEvent]) -> Result<(), AppError> {
+    let first_event = events.first().ok_or_else(|| {
+        AppError::InvalidCapture("cannot normalize an empty PipeWire capture".to_owned())
+    })?;
+    let TimestampMetadata::PipeWire(first_timestamp) = &first_event.timestamp_metadata;
+    let first_position = first_timestamp.event_position;
+    let rate_num = first_timestamp.rate_num;
+    let rate_denom = first_timestamp.rate_denom;
+
+    for event in events {
+        let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata;
+        event.timestamp_ns = relative_ns(
+            timestamp.event_position,
+            first_position,
+            rate_num,
+            rate_denom,
+        )?;
+    }
+
+    Ok(())
 }
