@@ -18,8 +18,13 @@ impl CaptureBackend for AlsaRawBackend {
     }
 }
 
-fn negative_errno(expected: libc::c_int) -> i32 {
-    -expected
+/// Normalises an ALSA error code.
+///
+/// The alsa crate stores either the negative function return value or its
+/// positive errno magnitude depending on the internal helper used, so code
+/// that compares against `libc` constants must use the absolute value.
+fn alsa_errno(error: &alsa::Error) -> i32 {
+    error.errno().abs()
 }
 
 pub(super) fn alsa_unavailable(error: alsa::Error) -> AppError {
@@ -31,9 +36,9 @@ pub(super) fn alsa_unavailable(error: alsa::Error) -> AppError {
 /// Maps errors from opening or configuring a device.
 pub(super) fn map_open_error(error: &alsa::Error, device: &str) -> AppError {
     let detail = format!("cannot open {device}: {error}");
-    match error.errno() {
-        errno if errno == negative_errno(libc::EBUSY) => AppError::AlsaBusy { detail },
-        errno if errno == negative_errno(libc::EACCES) || errno == negative_errno(libc::EPERM) => {
+    match alsa_errno(error) {
+        errno if errno == libc::EBUSY => AppError::AlsaBusy { detail },
+        errno if errno == libc::EACCES || errno == libc::EPERM => {
             AppError::AlsaPermissionDenied { detail }
         }
         _ => AppError::AlsaUnavailable { detail },
@@ -43,7 +48,7 @@ pub(super) fn map_open_error(error: &alsa::Error, device: &str) -> AppError {
 /// Maps errors while a capture is running; a vanished device is reported as
 /// a disconnect rather than a generic failure.
 pub(super) fn map_capture_error(error: &alsa::Error, device: &str) -> AppError {
-    if error.errno() == negative_errno(libc::ENODEV) {
+    if alsa_errno(error) == libc::ENODEV {
         return AppError::AlsaDisconnected;
     }
     map_open_error(error, device)

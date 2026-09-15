@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::timing::{alsa_absolute_ns, normalize_alsa_event_timestamps};
-use super::{map_capture_error, map_open_error};
+use super::{alsa_errno, map_capture_error, map_open_error};
 
 const MAX_MIDI_BYTES_PER_SECOND: u64 = 3_125;
 const EVENT_SAFETY_MARGIN: u64 = 128;
@@ -207,9 +207,9 @@ fn read_chunk(
 }
 
 fn classify_read_error(error: &alsa::Error) -> ReadOutcome {
-    match error.errno() {
-        errno if errno == -libc::EAGAIN => ReadOutcome::Retry,
-        errno if errno == -libc::EINTR => ReadOutcome::Interrupted,
+    match alsa_errno(error) {
+        errno if errno == libc::EAGAIN => ReadOutcome::Retry,
+        errno if errno == libc::EINTR => ReadOutcome::Interrupted,
         _ => ReadOutcome::Failed(alsa::Error::new(error.func(), error.errno())),
     }
 }
@@ -267,8 +267,8 @@ fn resolve_timestamp_setup(
 
 fn is_unsupported(error: &alsa::Error) -> bool {
     matches!(
-        error.errno(),
-        errno if errno == -libc::EINVAL || errno == -libc::ENOTTY
+        alsa_errno(error),
+        errno if errno == libc::EINVAL || errno == libc::ENOTTY
     )
 }
 

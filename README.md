@@ -78,6 +78,41 @@ Timestamped RawMIDI reads are preferred; if unsupported, capture fails unless
 you pass `--allow-userspace-timestamps`, which is loudly labeled as userspace
 timestamping and never presented as equivalent to kernel timestamping.
 
+### PipeWire capture API
+
+```bash
+midijitter record \
+  --source "Scarlett 18i20 USB MIDI 1 (capture)" \
+  --duration 60 \
+  --output capture.json \
+  --pw-api filter
+```
+
+`--pw-api` selects which native PipeWire API the capture path uses
+(default: `filter`). The filter path mirrors `pw-mididump`: event timing
+comes from the graph position (`spa_io_position`) delivered with each
+process cycle plus the event offset. The `stream` path uses `pw_stream`
+timing instead and is kept for comparison. Both produce the same
+graph-position timestamped capture format.
+
+### Manual PipeWire connection
+
+If WirePlumber on your system cannot auto-link MIDI ports (some setups fail
+with `no target node available`, and filter ports rely on session management
+for auto-linking), expose a PipeWire MIDI sink and link it yourself:
+
+```bash
+midijitter record \
+  --source "Scarlett 18i20 USB MIDI 1 (capture)" \
+  --duration 60 \
+  --output capture.json \
+  --manual-connect
+```
+
+Then connect the source port to the `midijitter-capture:input_1` port in a
+patchbay such as `qpwgraph` or with `pw-link`. Recording starts automatically
+once the link is active.
+
 ### Analyze
 
 ```bash
