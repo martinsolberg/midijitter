@@ -64,6 +64,12 @@ enum Command {
         #[arg(long)]
         output_dir: PathBuf,
     },
+    /// Compare jitter analyses side by side.
+    Compare {
+        /// Capture files produced by `record`. Each file is re-analyzed.
+        #[arg(num_args = 1..)]
+        captures: Vec<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -96,6 +102,7 @@ pub fn run() -> Result<(), AppError> {
             capture,
             output_dir,
         } => run_plot(capture, output_dir),
+        Command::Compare { captures } => run_compare(captures),
     }
 }
 
@@ -241,5 +248,10 @@ fn run_plot(capture: PathBuf, output_dir: PathBuf) -> Result<(), AppError> {
     for created in crate::plot::render_plots(&capture_file, &analysis, &output_dir)? {
         println!("Created: {}", created.display());
     }
+    Ok(())
+}
+
+fn run_compare(captures: Vec<PathBuf>) -> Result<(), AppError> {
+    print!("{}", output::compare::format_comparison(&captures)?);
     Ok(())
 }

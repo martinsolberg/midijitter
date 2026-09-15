@@ -1,3 +1,4 @@
+pub mod compare;
 pub mod csv;
 pub mod json;
 pub mod text;
