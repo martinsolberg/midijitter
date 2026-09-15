@@ -102,7 +102,8 @@ impl Rng {
 /// Generates a deterministic synthetic capture honoring every option.
 ///
 /// The RNG is consumed in a fixed per-tick order (jitter, missing decision,
-/// duplicate decision), so identical configs always produce identical files.
+/// then duplicate decision unless the tick was dropped), so identical
+/// configs always produce identical files.
 pub fn generate(config: SimulateConfig) -> Result<CaptureFile, AppError> {
     if !config.bpm.is_finite() || config.bpm <= 0.0 {
         return Err(AppError::InvalidCapture(
@@ -123,6 +124,26 @@ pub fn generate(config: SimulateConfig) -> Result<CaptureFile, AppError> {
                 "simulate {name} must be between 0 and 1"
             )));
         }
+    }
+    if !config.jitter_std_ns.is_finite() || config.jitter_std_ns < 0.0 {
+        return Err(AppError::InvalidCapture(
+            "simulate jitter-std must be non-negative".to_owned(),
+        ));
+    }
+    if !config.periodic_jitter_ns.is_finite() || config.periodic_jitter_ns < 0.0 {
+        return Err(AppError::InvalidCapture(
+            "simulate periodic-jitter must be non-negative".to_owned(),
+        ));
+    }
+    if !config.periodic_hz.is_finite() || config.periodic_hz < 0.0 {
+        return Err(AppError::InvalidCapture(
+            "simulate periodic-hz must be non-negative".to_owned(),
+        ));
+    }
+    if !config.drift_per_second.is_finite() {
+        return Err(AppError::InvalidCapture(
+            "simulate drift must be finite".to_owned(),
+        ));
     }
 
     let period_ns = 60_000_000_000.0 / (config.bpm * 24.0);
