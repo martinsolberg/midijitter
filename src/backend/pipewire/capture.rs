@@ -112,9 +112,11 @@ pub(super) fn record(request: CaptureRequest) -> Result<CaptureFile, AppError> {
         &core,
         "midijitter-capture",
         properties! {
+            *pw::keys::NODE_NAME => "midijitter-capture",
             *pw::keys::MEDIA_TYPE => "Midi",
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Music",
+            *pw::keys::FORMAT_DSP => "8 bit raw midi",
         },
     )
     .map_err(pipewire_unavailable)?;
@@ -150,18 +152,28 @@ pub(super) fn record(request: CaptureRequest) -> Result<CaptureFile, AppError> {
             detail: "could not construct SPA application/control format".to_owned(),
         })?,
     ];
-    stream
-        .connect(
-            Direction::Input,
+    let (target_id, flags) = if request.manual_connect {
+        (
+            None,
+            pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS,
+        )
+    } else {
+        (
             Some(request.source.node_id),
             pw::stream::StreamFlags::AUTOCONNECT
                 | pw::stream::StreamFlags::MAP_BUFFERS
                 | pw::stream::StreamFlags::RT_PROCESS,
-            &mut params,
         )
+    };
+    stream
+        .connect(Direction::Input, target_id, flags, &mut params)
         .map_err(|error| AppError::PipeWireNegotiationFailed {
             detail: error.to_string(),
         })?;
+
+    if request.manual_connect {
+        println!("Sink: midijitter-capture:input_1  (use a patchbay to link your source)");
+    }
 
     // Ctrl-C / SIGTERM set an async-signal-safe flag; the timer below
     // observes it on the main-loop thread and quits cleanly, so the process
@@ -272,6 +284,10 @@ fn midi_control_format() -> Result<Vec<u8>, AppError> {
                 FormatProperties::MediaSubtype.0,
                 Value::Id(Id(MediaSubtype::Control.as_raw())),
             ),
+            Property::new(
+                spa::sys::SPA_FORMAT_CONTROL_types,
+                Value::Int(1 << spa::sys::SPA_CONTROL_Midi),
+            ),
         ],
     };
     spa::pod::serialize::PodSerializer::serialize(
@@ -300,11 +316,28 @@ fn process_buffer(stream: &pw::stream::Stream, state: &Rc<RefCell<CaptureState>>
         state.borrow().request_stop(STOP_NEGOTIATION_FAILURE);
         return;
     };
+    // Before a link is active, the process callback may be invoked with
+    // a zeroed graph position; just wait for a real cycle.
+    if rate_num == 0 || rate_denom == 0 || quantum == 0 {
+        return;
+    }
 
-    let Some(buffer) = stream.dequeue_buffer() else {
+    let Some(mut buffer) = stream.dequeue_buffer() else {
         return;
     };
-    let Some(control) = buffer.find_meta::<MetaControl>() else {
+    let (sequence, _source) = if let Some(control) = buffer.find_meta::<MetaControl>() {
+        (Some(control.sequence()), "meta")
+    } else {
+        (
+            buffer
+                .datas_mut()
+                .first_mut()
+                .and_then(|data| data.data())
+                .and_then(|bytes| spa_sequence_from_bytes(bytes)),
+            "data",
+        )
+    };
+    let Some(sequence) = sequence else {
         state.borrow().request_stop(STOP_UNSUPPORTED_FORMAT);
         return;
     };
@@ -315,8 +348,8 @@ fn process_buffer(stream: &pw::stream::Stream, state: &Rc<RefCell<CaptureState>>
         return;
     }
     if unsafe {
-        record_spa_controls(
-            control,
+        record_spa_sequence(
+            sequence,
             cycle_position,
             rate_num,
             rate_denom,
@@ -334,20 +367,41 @@ fn process_buffer(stream: &pw::stream::Stream, state: &Rc<RefCell<CaptureState>>
     }
 }
 
+/// Casts a raw data buffer to a SPA control sequence if its header looks valid.
+///
+/// PipeWire can deliver MIDI either as `SPA_META_Control` metadata or as a
+/// `SPA_TYPE_Sequence` pod inside the buffer's data memory. This handles the
+/// latter case for manually-linked sinks.
+fn spa_sequence_from_bytes(bytes: &[u8]) -> Option<&spa::sys::spa_pod_sequence> {
+    if bytes.len() < std::mem::size_of::<spa::sys::spa_pod>() {
+        return None;
+    }
+    // SAFETY: the pointer is valid for the lifetime of the borrowed slice and
+    // we only dereference the fixed-size pod header here.
+    let pod = unsafe { &*bytes.as_ptr().cast::<spa::sys::spa_pod>() };
+    if pod.type_ != spa::sys::SPA_TYPE_Sequence {
+        return None;
+    }
+    let needed = std::mem::size_of::<spa::sys::spa_pod>() + pod.size as usize;
+    if bytes.len() < needed {
+        return None;
+    }
+    Some(unsafe { &*bytes.as_ptr().cast::<spa::sys::spa_pod_sequence>() })
+}
+
 /// Reads the SPA sequence in-place; PipeWire owns this memory until the buffer is returned.
-unsafe fn record_spa_controls(
-    control: &MetaControl,
+unsafe fn record_spa_sequence(
+    sequence: &spa::sys::spa_pod_sequence,
     cycle_position: i64,
     rate_num: u32,
     rate_denom: u32,
     quantum: u32,
     state: &mut CaptureState,
 ) -> Result<(), ()> {
-    // SAFETY: `control` points to a live PipeWire buffer owned by the stream
+    // SAFETY: `sequence` points to a live PipeWire buffer owned by the stream
     // until the buffer is returned, and all pointer arithmetic below stays
     // within the sequence pod bounds checked against `pod.size`.
     unsafe {
-        let sequence: &spa::sys::spa_pod_sequence = control.sequence();
         let sequence_start = sequence as *const _ as *const u8;
         let pod_size = sequence.pod.size as usize;
         if pod_size < std::mem::size_of::<spa::sys::spa_pod_sequence_body>() {
