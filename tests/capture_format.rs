@@ -120,3 +120,17 @@ fn json_parser_rejects_unsupported_format_version() {
         Err(AppError::UnsupportedCaptureFormat(2))
     ));
 }
+
+#[test]
+fn validated_json_parser_rejects_ppqn_values_other_than_24() {
+    for ppqn in [0, 23, 25, u32::MAX] {
+        let mut capture = fixture_capture();
+        capture.ppqn = ppqn;
+        let json = serde_json::to_string(&capture).unwrap();
+
+        assert!(matches!(
+            CaptureFile::from_json_str(&json),
+            Err(AppError::InvalidCapture(_))
+        ));
+    }
+}

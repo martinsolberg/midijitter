@@ -39,6 +39,12 @@ impl CaptureFile {
             ));
         }
 
+        if self.ppqn != 24 {
+            return Err(AppError::InvalidCapture(
+                "PPQN must be exactly 24".to_owned(),
+            ));
+        }
+
         for transition in &self.transitions {
             validate_rate_denominator(transition.rate_denom)?;
         }
