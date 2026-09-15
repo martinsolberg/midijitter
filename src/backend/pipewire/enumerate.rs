@@ -57,6 +57,7 @@ pub(super) fn midi_sources() -> Result<Vec<MidiSource>, AppError> {
                 object_serial: properties.get("object.serial").map(str::to_owned),
                 node_id,
                 port_id: global.id,
+                alsa_device: None,
             });
         })
         .register();
@@ -131,6 +132,7 @@ mod tests {
             object_serial: Some("101".to_owned()),
             node_id: 10,
             port_id: 20,
+            alsa_device: None,
         }]));
         let retained_callback_reference = Rc::clone(&sources);
 

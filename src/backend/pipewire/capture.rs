@@ -463,7 +463,9 @@ mod tests {
         for (sequence, event) in events.iter().enumerate() {
             assert_eq!(event.sequence, sequence as u64);
             assert_eq!(event.timestamp_ns, 0);
-            let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata;
+            let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata else {
+                panic!("PipeWire metadata must be preserved");
+            };
             assert_eq!(timestamp.cycle_position, 4_096);
             assert_eq!(timestamp.event_offset, 17);
             assert_eq!(timestamp.event_position, 4_113);
@@ -502,8 +504,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(events.len(), 2);
-        let TimestampMetadata::PipeWire(first) = &events[0].timestamp_metadata;
-        let TimestampMetadata::PipeWire(second) = &events[1].timestamp_metadata;
+        let TimestampMetadata::PipeWire(first) = &events[0].timestamp_metadata else {
+            panic!("PipeWire metadata must be preserved");
+        };
+        let TimestampMetadata::PipeWire(second) = &events[1].timestamp_metadata else {
+            panic!("PipeWire metadata must be preserved");
+        };
         assert_eq!((first.event_offset, first.event_position), (317, 48_317));
         assert_eq!((second.event_offset, second.event_position), (851, 48_851));
         assert_ne!(first.event_position, second.event_position);

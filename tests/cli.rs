@@ -68,6 +68,7 @@ fn source(
         object_serial: object_serial.map(str::to_owned),
         node_id,
         port_id,
+        alsa_device: None,
     }
 }
 
@@ -361,6 +362,127 @@ fn record_requires_exactly_one_termination_condition() {
         .output()
         .expect("midijitter binary should run");
     assert_eq!(output.status.code(), Some(2));
+}
+
+fn alsa_capture_json() -> String {
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fixture_capture("perfect-120")).expect("fixture should parse");
+    value["backend"] = serde_json::Value::String("alsa-raw".to_owned());
+    value["timestamp_method"] =
+        serde_json::Value::String("ALSA timestamped RawMIDI (CLOCK_MONOTONIC_RAW)".to_owned());
+    value["source"] = serde_json::json!({"identity": "hw:1,0,0", "display_name": "Test MIDI"});
+    for event in value["events"]
+        .as_array_mut()
+        .expect("events should be an array")
+    {
+        let relative_ns = event["timestamp_ns"]
+            .as_i64()
+            .expect("timestamp should fit");
+        event["timestamp_metadata"] = serde_json::json!({
+            "alsa": {
+                "absolute_ns": relative_ns + 9_000_000_000,
+                "clock": "monotonic-raw",
+                "timestamped_read": true,
+            }
+        });
+    }
+    serde_json::to_string(&value).expect("capture should serialize")
+}
+
+#[test]
+fn analyze_accepts_alsa_captures_with_the_backend_label() {
+    let capture = temp_path("alsa-120.json");
+    std::fs::write(&capture, alsa_capture_json()).unwrap();
+    let csv_path = temp_path("alsa-120.csv");
+
+    let output = binary()
+        .args([
+            "analyze",
+            &capture.to_string_lossy(),
+            "--csv",
+            &csv_path.to_string_lossy(),
+        ])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("alsa-raw"),
+        "report should name the backend"
+    );
+
+    let csv = std::fs::read_to_string(&csv_path).expect("CSV should be written");
+    let mut lines = csv.lines();
+    assert!(lines.next().unwrap().starts_with("event,tick_index"));
+    let rows: Vec<_> = lines.collect();
+    assert_eq!(rows.len(), 12);
+    let fields: Vec<_> = rows[1].split(',').collect();
+    assert_eq!(fields[7], "alsa-raw");
+    assert!(fields[8].is_empty(), "ALSA rows leave graph columns blank");
+    assert!(fields[9].is_empty());
+    assert!(fields[10].is_empty());
+}
+
+#[test]
+fn devices_lists_alsa_rawmidi_sources_without_crashing() {
+    let output = binary()
+        .args(["devices", "--backend", "alsa-raw"])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(output.status.success());
+}
+
+#[test]
+fn record_rejects_unknown_alsa_devices() {
+    let output = binary()
+        .args([
+            "record",
+            "--backend",
+            "alsa-raw",
+            "--source",
+            "hw:99,99,99",
+            "--ticks",
+            "10",
+            "--output",
+            &temp_path("alsa-missing.json").to_string_lossy(),
+        ])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no MIDI source is available")
+            || stderr.contains("was not found")
+            || stderr.contains("ALSA device unavailable"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn record_rejects_userspace_fallback_for_pipewire() {
+    let output = binary()
+        .args([
+            "record",
+            "--source",
+            "x",
+            "--ticks",
+            "10",
+            "--output",
+            "out.json",
+            "--allow-userspace-timestamps",
+        ])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("only valid with --backend alsa-raw"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

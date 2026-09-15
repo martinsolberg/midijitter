@@ -1,5 +1,6 @@
 use crate::{AppError, CaptureFile};
 
+pub mod alsa;
 pub mod pipewire;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,6 +11,9 @@ pub struct MidiSource {
     pub object_serial: Option<String>,
     pub node_id: u32,
     pub port_id: u32,
+    /// ALSA RawMIDI device identifier (`hw:card,device,subdevice`); `None`
+    /// for PipeWire sources.
+    pub alsa_device: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +26,9 @@ pub enum CaptureTermination {
 pub struct CaptureRequest {
     pub source: MidiSource,
     pub termination: CaptureTermination,
+    /// Permit the explicitly labeled `CLOCK_MONOTONIC_RAW` userspace fallback
+    /// when timestamped ALSA RawMIDI reads are unavailable.
+    pub allow_userspace_timestamps: bool,
 }
 
 impl CaptureRequest {
@@ -33,13 +40,22 @@ impl CaptureRequest {
             _ => Ok(Self {
                 source,
                 termination,
+                allow_userspace_timestamps: false,
             }),
         }
+    }
+
+    pub fn allow_userspace_timestamps(mut self) -> Self {
+        self.allow_userspace_timestamps = true;
+        self
     }
 }
 
 impl MidiSource {
     pub fn stable_identity(&self) -> String {
+        if let Some(device) = &self.alsa_device {
+            return device.clone();
+        }
         match &self.object_serial {
             Some(serial) => format!("{}/{}#{serial}", self.node_name, self.port_name),
             None => format!("{}/{}", self.node_name, self.port_name),
@@ -84,6 +100,7 @@ mod tests {
             object_serial: None,
             node_id: 1,
             port_id: 2,
+            alsa_device: None,
         }
     }
 

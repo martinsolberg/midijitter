@@ -1,6 +1,6 @@
 use midijitter::{
-    AppError, CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition, MidiEvent,
-    PipeWireTimestamp, SourceMetadata, TimestampMetadata,
+    AlsaTimestamp, AppError, CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition,
+    MidiEvent, PipeWireTimestamp, SourceMetadata, TimestampMetadata,
 };
 
 fn fixture_capture() -> CaptureFile {
@@ -48,6 +48,23 @@ fn capture_round_trip_preserves_pipewire_graph_timestamp() {
 }
 
 #[test]
+fn capture_round_trip_preserves_alsa_timestamps() {
+    let mut capture = fixture_capture();
+    capture.backend = "alsa-raw".to_owned();
+    capture.events[0].timestamp_metadata = TimestampMetadata::Alsa(AlsaTimestamp {
+        absolute_ns: 9_000_000_000,
+        clock: "monotonic-raw".to_owned(),
+        timestamped_read: true,
+    });
+
+    let json = serde_json::to_string(&capture).unwrap();
+    assert!(json.contains("\"alsa\""));
+    let parsed = CaptureFile::from_json_str(&json).unwrap();
+    assert_eq!(parsed, capture);
+    parsed.validate().unwrap();
+}
+
+#[test]
 fn validation_rejects_unsupported_format_version() {
     let mut capture = fixture_capture();
     capture.format_version = 2;
@@ -72,7 +89,9 @@ fn validation_rejects_empty_source_identity() {
 #[test]
 fn validation_rejects_zero_pipewire_rate_denominator() {
     let mut capture = fixture_capture();
-    let TimestampMetadata::PipeWire(timestamp) = &mut capture.events[0].timestamp_metadata;
+    let TimestampMetadata::PipeWire(timestamp) = &mut capture.events[0].timestamp_metadata else {
+        panic!("test fixtures carry PipeWire timestamps");
+    };
     timestamp.rate_denom = 0;
 
     assert!(matches!(

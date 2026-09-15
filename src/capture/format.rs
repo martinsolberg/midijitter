@@ -75,8 +75,13 @@ impl CaptureFile {
             }
             previous_sequence = Some(event.sequence);
 
-            let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata;
-            validate_rate_denominator(timestamp.rate_denom)?;
+            match &event.timestamp_metadata {
+                TimestampMetadata::PipeWire(timestamp) => {
+                    validate_rate_denominator(timestamp.rate_denom)?;
+                }
+                // NOTE: a future timestamp variant must extend this match.
+                TimestampMetadata::Alsa(_) => {}
+            }
         }
 
         Ok(())

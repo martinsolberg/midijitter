@@ -41,13 +41,21 @@ pub fn normalize_pipewire_event_timestamps(events: &mut [CapturedEvent]) -> Resu
     let first_event = events.first().ok_or_else(|| {
         AppError::InvalidCapture("cannot normalize an empty PipeWire capture".to_owned())
     })?;
-    let TimestampMetadata::PipeWire(first_timestamp) = &first_event.timestamp_metadata;
+    let TimestampMetadata::PipeWire(first_timestamp) = &first_event.timestamp_metadata else {
+        return Err(AppError::InvalidCapture(
+            "PipeWire capture must carry PipeWire timestamps".to_owned(),
+        ));
+    };
     let first_position = first_timestamp.event_position;
     let rate_num = first_timestamp.rate_num;
     let rate_denom = first_timestamp.rate_denom;
 
     for event in events {
-        let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata;
+        let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata else {
+            return Err(AppError::InvalidCapture(
+                "PipeWire capture must carry PipeWire timestamps".to_owned(),
+            ));
+        };
         event.timestamp_ns = relative_ns(
             timestamp.event_position,
             first_position,

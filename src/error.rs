@@ -26,6 +26,24 @@ pub enum AppError {
     #[error("no MIDI Clock messages were captured")]
     NoClockEvents,
 
+    #[error("ALSA device unavailable: {detail}")]
+    AlsaUnavailable { detail: String },
+
+    #[error("ALSA device busy: {detail}")]
+    AlsaBusy { detail: String },
+
+    #[error("ALSA permission denied: {detail}")]
+    AlsaPermissionDenied { detail: String },
+
+    #[error("ALSA device disconnected during capture")]
+    AlsaDisconnected,
+
+    #[error(
+        "ALSA timestamp mode unsupported; retry with --allow-userspace-timestamps \
+         to use explicitly labeled userspace timestamping"
+    )]
+    AlsaTimestampUnsupported,
+
     #[error("plot rendering failed: {0}")]
     Plot(String),
 
@@ -72,8 +90,11 @@ pub enum AppError {
 impl AppError {
     pub fn exit_code(&self) -> u8 {
         match self {
-            Self::PipeWireUnavailable { .. } => 3,
-            Self::PipeWirePermissionDenied { .. } => 4,
+            Self::PipeWireUnavailable { .. }
+            | Self::AlsaUnavailable { .. }
+            | Self::AlsaBusy { .. }
+            | Self::AlsaDisconnected => 3,
+            Self::PipeWirePermissionDenied { .. } | Self::AlsaPermissionDenied { .. } => 4,
             Self::NoSource | Self::AmbiguousSource { .. } | Self::SourceNotFound { .. } => 5,
             _ => 1,
         }

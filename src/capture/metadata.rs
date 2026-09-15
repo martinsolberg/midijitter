@@ -25,6 +25,20 @@ pub struct GraphTransition {
 pub enum TimestampMetadata {
     #[serde(rename = "pipewire")]
     PipeWire(PipeWireTimestamp),
+    #[serde(rename = "alsa")]
+    Alsa(AlsaTimestamp),
+}
+
+/// Raw ALSA RawMIDI timestamp for one captured event.
+///
+/// `absolute_ns` is the kernel (or userspace fallback) timestamp in
+/// `CLOCK_MONOTONIC_RAW` nanoseconds. The normalized `timestamp_ns` on the
+/// enclosing event stays relative to the first captured event.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct AlsaTimestamp {
+    pub absolute_ns: i128,
+    pub clock: String,
+    pub timestamped_read: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

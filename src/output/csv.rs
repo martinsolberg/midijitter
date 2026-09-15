@@ -46,18 +46,23 @@ pub fn write_csv_report(
     let mut previous: Option<(i128, bool, i64)> = None;
     for row in &analysis.rows {
         let event = events.get(&row.sequence);
-        // NOTE: non-PipeWire timestamp metadata (e.g. a future ALSA variant)
-        // must extend this match with blank backend-specific columns.
+        // NOTE: a future timestamp variant must extend this match with blank
+        // backend-specific columns.
         let (backend, cycle_position, event_offset, event_position) = match event {
-            Some(event) => {
-                let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata;
-                (
+            Some(event) => match &event.timestamp_metadata {
+                TimestampMetadata::PipeWire(timestamp) => (
                     "pipewire".to_owned(),
                     timestamp.cycle_position.to_string(),
                     timestamp.event_offset.to_string(),
                     timestamp.event_position.to_string(),
-                )
-            }
+                ),
+                TimestampMetadata::Alsa(_) => (
+                    "alsa-raw".to_owned(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ),
+            },
             None => (String::new(), String::new(), String::new(), String::new()),
         };
 

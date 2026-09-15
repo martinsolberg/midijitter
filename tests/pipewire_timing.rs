@@ -128,6 +128,8 @@ fn pipewire_clock_event(
 }
 
 fn event_position(event: &CapturedEvent) -> i64 {
-    let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata;
+    let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata else {
+        panic!("test fixtures carry PipeWire timestamps");
+    };
     timestamp.event_position
 }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::analysis::{AnalysisOptions, analyze};
+use crate::backend::alsa::AlsaRawBackend;
 use crate::backend::pipewire::PipeWireBackend;
 use crate::backend::{CaptureBackend, CaptureRequest, CaptureTermination, select_source};
 use crate::output::{self, duration_s, timing_summary};
@@ -27,6 +28,7 @@ enum Command {
         #[arg(long, value_enum, default_value_t = Backend::Pipewire)]
         backend: Backend,
         /// Source display name or stable identity, as shown by `devices`.
+        /// For `alsa-raw` this is the RawMIDI identifier (`hw:card,device,subdevice`).
         #[arg(long)]
         source: String,
         /// Capture duration in seconds; mutually exclusive with --ticks.
@@ -38,6 +40,10 @@ enum Command {
         /// Destination capture file.
         #[arg(long)]
         output: PathBuf,
+        /// Permit explicitly labeled userspace timestamping when timestamped
+        /// ALSA RawMIDI reads are unavailable. Only valid with `alsa-raw`.
+        #[arg(long)]
+        allow_userspace_timestamps: bool,
     },
     /// Analyze a capture file and report jitter statistics.
     Analyze {
@@ -63,20 +69,28 @@ enum Command {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Backend {
     Pipewire,
+    #[value(name = "alsa-raw")]
+    AlsaRaw,
 }
 
 pub fn run() -> Result<(), AppError> {
     match Cli::parse().command {
-        Command::Devices {
-            backend: Backend::Pipewire,
-        } => run_devices(),
+        Command::Devices { backend } => run_devices(backend),
         Command::Record {
-            backend: Backend::Pipewire,
+            backend,
             source,
             duration,
             ticks,
             output,
-        } => run_record(source, duration, ticks, output),
+            allow_userspace_timestamps,
+        } => run_record(
+            backend,
+            source,
+            duration,
+            ticks,
+            output,
+            allow_userspace_timestamps,
+        ),
         Command::Analyze { capture, json, csv } => run_analyze(capture, json, csv),
         Command::Plot {
             capture,
@@ -85,8 +99,11 @@ pub fn run() -> Result<(), AppError> {
     }
 }
 
-fn run_devices() -> Result<(), AppError> {
-    let sources = PipeWireBackend.enumerate()?;
+fn run_devices(backend: Backend) -> Result<(), AppError> {
+    let sources = match backend {
+        Backend::Pipewire => PipeWireBackend.enumerate()?,
+        Backend::AlsaRaw => AlsaRawBackend.enumerate()?,
+    };
     if sources.is_empty() {
         println!("No MIDI source ports found.");
     } else {
@@ -104,10 +121,12 @@ fn run_devices() -> Result<(), AppError> {
 }
 
 fn run_record(
+    backend: Backend,
     source: String,
     duration: Option<u64>,
     ticks: Option<u64>,
     output: PathBuf,
+    allow_userspace_timestamps: bool,
 ) -> Result<(), AppError> {
     let termination = match (duration, ticks) {
         (Some(seconds), None) => CaptureTermination::DurationSeconds(seconds),
@@ -118,36 +137,68 @@ fn run_record(
             ));
         }
     };
+    if allow_userspace_timestamps && !matches!(backend, Backend::AlsaRaw) {
+        return Err(AppError::InvalidCapture(
+            "--allow-userspace-timestamps is only valid with --backend alsa-raw".to_owned(),
+        ));
+    }
 
-    let sources = PipeWireBackend.enumerate()?;
+    let recording: Box<dyn CaptureBackend> = match backend {
+        Backend::Pipewire => Box::new(PipeWireBackend),
+        Backend::AlsaRaw => Box::new(AlsaRawBackend),
+    };
+    let sources = recording.enumerate()?;
     let selected = select_source(&sources, &source)?;
     let request = CaptureRequest::new(selected.clone(), termination)?;
-    println!("Backend: PipeWire");
-    println!("Source: {}", selected.display_name);
-    println!("Timestamping: PipeWire graph position + event offset");
+    let request = if allow_userspace_timestamps {
+        request.allow_userspace_timestamps()
+    } else {
+        request
+    };
+    match backend {
+        Backend::Pipewire => {
+            println!("Backend: PipeWire");
+            println!("Source: {}", selected.display_name);
+            println!("Timestamping: PipeWire graph position + event offset");
+        }
+        Backend::AlsaRaw => {
+            println!("Backend: ALSA RawMIDI");
+            println!("Source: {}", selected.display_name);
+            println!("Device: {}", selected.stable_identity());
+            println!("Timestamping: ALSA timestamped RawMIDI (CLOCK_MONOTONIC_RAW)");
+        }
+    }
     println!();
     println!("Recording...");
-    let capture = PipeWireBackend.record(request)?;
+    let capture = recording.record(request)?;
     capture.write_to_file(&output)?;
 
+    if capture.timestamp_method.contains("userspace") {
+        eprintln!(
+            "Warning: capture used explicitly labeled userspace timestamps, not kernel \
+             RawMIDI timestamps. Do not compare it as equivalent to kernel timestamping."
+        );
+    }
     let clocks = capture
         .events
         .iter()
         .filter(|event| event.event == MidiEvent::Clock)
         .count();
     let timing = timing_summary(&capture);
-    println!(
-        "Graph: {} / quantum {}",
-        timing
-            .rate_hz
-            .map(|rate| format!("{rate:.2} Hz"))
-            .unwrap_or_else(|| "unknown".to_owned()),
-        timing
-            .quantum
-            .map(|quantum| quantum.to_string())
-            .unwrap_or_else(|| "unknown".to_owned())
-    );
-    println!();
+    if matches!(backend, Backend::Pipewire) {
+        println!(
+            "Graph: {} / quantum {}",
+            timing
+                .rate_hz
+                .map(|rate| format!("{rate:.2} Hz"))
+                .unwrap_or_else(|| "unknown".to_owned()),
+            timing
+                .quantum
+                .map(|quantum| quantum.to_string())
+                .unwrap_or_else(|| "unknown".to_owned())
+        );
+        println!();
+    }
     println!("Captured: {clocks} MIDI clocks");
     println!("Duration: {:.2} s", duration_s(&capture));
     println!();

@@ -11,7 +11,7 @@ pub use analysis::{
     PhaseStatistics, analyze,
 };
 pub use capture::{
-    CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition, MidiEvent, PipeWireTimestamp,
-    SourceMetadata, TimestampMetadata,
+    AlsaTimestamp, CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition, MidiEvent,
+    PipeWireTimestamp, SourceMetadata, TimestampMetadata,
 };
 pub use error::AppError;

@@ -20,11 +20,16 @@ pub struct TimingSummary {
 /// The initial timing comes from the first PipeWire event; every stored
 /// transition is classified by comparing it against the previous timing.
 pub fn timing_summary(capture: &CaptureFile) -> TimingSummary {
-    // NOTE: a future non-PipeWire timestamp variant must be skipped here.
-    let initial = capture.events.first().map(|event| {
-        let TimestampMetadata::PipeWire(timestamp) = &event.timestamp_metadata;
-        (timestamp.rate_num, timestamp.rate_denom, timestamp.quantum)
-    });
+    let initial = capture
+        .events
+        .first()
+        .and_then(|event| match &event.timestamp_metadata {
+            TimestampMetadata::PipeWire(timestamp) => {
+                Some((timestamp.rate_num, timestamp.rate_denom, timestamp.quantum))
+            }
+            // NOTE: a future timestamp variant must extend this match.
+            TimestampMetadata::Alsa(_) => None,
+        });
 
     let mut rate_changes = 0;
     let mut quantum_changes = 0;
