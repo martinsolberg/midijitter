@@ -70,6 +70,39 @@ enum Command {
         #[arg(num_args = 1..)]
         captures: Vec<PathBuf>,
     },
+    /// Generate a deterministic synthetic capture for testing.
+    Simulate {
+        /// Nominal tempo in BPM.
+        #[arg(long, default_value_t = 120.0)]
+        bpm: f64,
+        /// Capture duration in seconds.
+        #[arg(long, default_value_t = 60)]
+        duration: u64,
+        /// Gaussian jitter standard deviation (e.g. 1ms, 500us).
+        #[arg(long, default_value = "0")]
+        jitter_std: String,
+        /// Periodic jitter amplitude (e.g. 1ms). Disabled with 0.
+        #[arg(long, default_value = "0")]
+        periodic_jitter: String,
+        /// Periodic jitter frequency in Hz.
+        #[arg(long, default_value_t = 1.0)]
+        periodic_hz: f64,
+        /// Probability per tick of dropping a clock (0 to 1).
+        #[arg(long, default_value_t = 0.0)]
+        missing_rate: f64,
+        /// Probability per tick of emitting a duplicate clock (0 to 1).
+        #[arg(long, default_value_t = 0.0)]
+        duplicate_rate: f64,
+        /// Linear tempo drift (e.g. 10ppm/s). Disabled with 0.
+        #[arg(long, default_value = "0")]
+        drift: String,
+        /// Deterministic seed; identical configs produce identical files.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Destination capture file.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -103,6 +136,29 @@ pub fn run() -> Result<(), AppError> {
             output_dir,
         } => run_plot(capture, output_dir),
         Command::Compare { captures } => run_compare(captures),
+        Command::Simulate {
+            bpm,
+            duration,
+            jitter_std,
+            periodic_jitter,
+            periodic_hz,
+            missing_rate,
+            duplicate_rate,
+            drift,
+            seed,
+            output,
+        } => run_simulate(
+            bpm,
+            duration,
+            jitter_std,
+            periodic_jitter,
+            periodic_hz,
+            missing_rate,
+            duplicate_rate,
+            drift,
+            seed,
+            output,
+        ),
     }
 }
 
@@ -253,5 +309,38 @@ fn run_plot(capture: PathBuf, output_dir: PathBuf) -> Result<(), AppError> {
 
 fn run_compare(captures: Vec<PathBuf>) -> Result<(), AppError> {
     print!("{}", output::compare::format_comparison(&captures)?);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_simulate(
+    bpm: f64,
+    duration: u64,
+    jitter_std: String,
+    periodic_jitter: String,
+    periodic_hz: f64,
+    missing_rate: f64,
+    duplicate_rate: f64,
+    drift: String,
+    seed: u64,
+    output: PathBuf,
+) -> Result<(), AppError> {
+    let capture = crate::simulate::generate(crate::simulate::SimulateConfig {
+        bpm,
+        duration_s: duration,
+        jitter_std_ns: crate::simulate::parse_duration_ns(&jitter_std)?,
+        periodic_jitter_ns: crate::simulate::parse_duration_ns(&periodic_jitter)?,
+        periodic_hz,
+        missing_rate,
+        duplicate_rate,
+        drift_per_second: crate::simulate::parse_drift_per_second(&drift)?,
+        seed,
+    })?;
+    capture.write_to_file(&output)?;
+    println!(
+        "Simulated {} MIDI clocks at {bpm} BPM",
+        capture.events.len()
+    );
+    println!("Saved: {}", output.display());
     Ok(())
 }
