@@ -1,7 +1,7 @@
 use super::common::{
-    CaptureState, STOP_COMPLETE, STOP_NEGOTIATION_FAILURE, STOP_NONE, STOP_SOURCE_GONE,
-    STOP_STREAM_ERROR, STOP_UNSUPPORTED_FORMAT, event_capacity, finish_capture,
-    pipewire_unavailable, record_spa_sequence, spa_sequence_from_bytes,
+    CaptureState, STOP_NEGOTIATION_FAILURE, STOP_NONE, STOP_SOURCE_GONE, STOP_STREAM_ERROR,
+    STOP_UNSUPPORTED_FORMAT, event_capacity, finish_capture, pipewire_unavailable, record_cycle,
+    spa_sequence_from_bytes,
 };
 use crate::AppError;
 use crate::backend::CaptureRequest;
@@ -192,27 +192,12 @@ fn process_buffer(stream: &pw::stream::Stream, state: &Rc<RefCell<CaptureState>>
         return;
     };
     let mut state = state.borrow_mut();
-    state.note_cycle_position(cycle_position);
-    state.observe_timing(rate_num, rate_denom, quantum);
-    if state.stop_reason() != STOP_NONE {
-        return;
-    }
-    if unsafe {
-        record_spa_sequence(
-            sequence,
-            cycle_position,
-            rate_num,
-            rate_denom,
-            quantum,
-            &mut state,
-        )
-    }
-    .is_err()
-    {
-        state.request_stop(STOP_UNSUPPORTED_FORMAT);
-        return;
-    }
-    if state.termination_reached(cycle_position) {
-        state.request_stop(STOP_COMPLETE);
-    }
+    record_cycle(
+        &mut state,
+        sequence,
+        cycle_position,
+        rate_num,
+        rate_denom,
+        quantum,
+    );
 }

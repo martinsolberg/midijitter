@@ -69,6 +69,10 @@ impl CaptureState {
         self.streamed
     }
 
+    pub(super) fn has_events(&self) -> bool {
+        !self.events.is_empty()
+    }
+
     pub(super) fn set_stream_error(&self, detail: String) {
         *self.stream_error.borrow_mut() = Some(detail);
     }
@@ -275,6 +279,42 @@ pub(super) unsafe fn record_spa_sequence(
             cursor = payload_end.add((8 - (value_size % 8)) % 8);
         }
         Ok(())
+    }
+}
+
+/// Shared per-cycle transport tail: stamps the first position, tracks graph
+/// timing, records the sequence, and checks termination. Used verbatim by
+/// both the stream and filter transports so their semantics cannot diverge.
+pub(super) fn record_cycle(
+    state: &mut CaptureState,
+    sequence: &spa::sys::spa_pod_sequence,
+    cycle_position: i64,
+    rate_num: u32,
+    rate_denom: u32,
+    quantum: u32,
+) {
+    state.note_cycle_position(cycle_position);
+    state.observe_timing(rate_num, rate_denom, quantum);
+    if state.stop_reason() != STOP_NONE {
+        return;
+    }
+    if unsafe {
+        record_spa_sequence(
+            sequence,
+            cycle_position,
+            rate_num,
+            rate_denom,
+            quantum,
+            state,
+        )
+    }
+    .is_err()
+    {
+        state.request_stop(STOP_UNSUPPORTED_FORMAT);
+        return;
+    }
+    if state.termination_reached(cycle_position) {
+        state.request_stop(STOP_COMPLETE);
     }
 }
 
