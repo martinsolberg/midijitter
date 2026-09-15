@@ -335,6 +335,57 @@ fn plot_command_creates_the_three_required_pngs() {
 }
 
 #[test]
+fn rolling_command_tracks_a_tempo_trend() {
+    let capture = temp_path("rolling-drift.json");
+    let simulated = binary()
+        .args([
+            "simulate",
+            "--bpm",
+            "120",
+            "--duration",
+            "60",
+            "--drift",
+            "200ppm/s",
+            "--output",
+            &capture.to_string_lossy(),
+        ])
+        .output()
+        .expect("midijitter binary should run");
+    assert!(simulated.status.success());
+
+    let output = binary()
+        .args(["rolling", &capture.to_string_lossy(), "--window", "5"])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    assert_eq!(lines.next().unwrap(), "tick_index,time_s,rolling_bpm");
+    let bpms: Vec<f64> = lines
+        .map(|line| line.split(',').nth(2).unwrap().parse().unwrap())
+        .collect();
+    assert!(bpms.len() > 100);
+    assert!(
+        bpms[0] - bpms[bpms.len() - 1] > 0.5,
+        "expected a falling tempo trend"
+    );
+}
+
+#[test]
+fn rolling_command_rejects_oversized_windows() {
+    let capture = temp_path("rolling-short.json");
+    std::fs::write(&capture, fixture_capture("perfect-120")).unwrap();
+
+    let output = binary()
+        .args(["rolling", &capture.to_string_lossy(), "--window", "60"])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(!output.status.success());
+}
+
+#[test]
 fn record_requires_exactly_one_termination_condition() {
     let output = binary()
         .args(["record", "--source", "x", "--output", "out.json"])

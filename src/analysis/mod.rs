@@ -1,11 +1,13 @@
 mod fit;
 mod indexing;
 mod jitter;
+pub mod rolling;
 mod statistics;
 
 use crate::{AppError, CaptureFile, MidiEvent};
 
 pub use jitter::{AnalysisResult, AnalysisRow, ExclusionCounts, PeriodStatistics, PhaseStatistics};
+pub use rolling::{RollingPoint, rolling_bpm};
 
 #[derive(Debug, Clone, Copy)]
 pub struct AnalysisOptions {

@@ -70,6 +70,14 @@ enum Command {
         #[arg(num_args = 1..)]
         captures: Vec<PathBuf>,
     },
+    /// Print rolling tempo over a sliding window.
+    Rolling {
+        /// Capture file produced by `record` or `simulate`.
+        capture: PathBuf,
+        /// Window length in seconds.
+        #[arg(long)]
+        window: u64,
+    },
     /// Generate a deterministic synthetic capture for testing.
     Simulate {
         /// Nominal tempo in BPM.
@@ -136,6 +144,7 @@ pub fn run() -> Result<(), AppError> {
             output_dir,
         } => run_plot(capture, output_dir),
         Command::Compare { captures } => run_compare(captures),
+        Command::Rolling { capture, window } => run_rolling(capture, window),
         Command::Simulate {
             bpm,
             duration,
@@ -309,6 +318,27 @@ fn run_plot(capture: PathBuf, output_dir: PathBuf) -> Result<(), AppError> {
 
 fn run_compare(captures: Vec<PathBuf>) -> Result<(), AppError> {
     print!("{}", output::compare::format_comparison(&captures)?);
+    Ok(())
+}
+
+fn run_rolling(capture: PathBuf, window_s: u64) -> Result<(), AppError> {
+    let capture_file = CaptureFile::read_from_file(&capture)?;
+    let analysis = analyze(&capture_file, AnalysisOptions::default())?;
+    if window_s == 0 || !analysis.fitted_period_ns.is_finite() || analysis.fitted_period_ns <= 0.0 {
+        return Err(AppError::InvalidCapture(
+            "rolling window must be positive".to_owned(),
+        ));
+    }
+    let window_ticks =
+        ((window_s as f64 * 1_000_000_000.0 / analysis.fitted_period_ns).round() as usize).max(1);
+    let points = crate::rolling_bpm(&analysis, window_ticks)?;
+    println!("tick_index,time_s,rolling_bpm");
+    for point in points {
+        println!(
+            "{},{:.6},{:.4}",
+            point.tick_index, point.time_s, point.rolling_bpm
+        );
+    }
     Ok(())
 }
 
