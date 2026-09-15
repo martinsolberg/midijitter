@@ -25,8 +25,7 @@ pub const CLOCK_MONOTONIC_RAW: &str = "monotonic-raw";
 pub const CLOCK_USERSPACE_MONOTONIC_RAW: &str = "userspace-monotonic-raw";
 
 pub const TIMESTAMP_METHOD_KERNEL: &str = "ALSA timestamped RawMIDI (CLOCK_MONOTONIC_RAW)";
-pub const TIMESTAMP_METHOD_USERSPACE: &str =
-    "userspace timestamps after read (CLOCK_MONOTONIC_RAW)";
+pub const TIMESTAMP_METHOD_USERSPACE: &str = "userspace-timestamped read (CLOCK_MONOTONIC_RAW)";
 
 /// Which clock produced the absolute ALSA timestamps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,8 +67,8 @@ pub(super) fn record(request: CaptureRequest) -> Result<CaptureFile, AppError> {
             })?,
         CaptureTermination::Ticks(_) => 0,
     };
-    // Wall-clock backstop so a silent source cannot hang a
-    // duration-bounded capture forever; data timestamps decide the content.
+    // Monotonic backstop so a silent source cannot hang a duration-bounded
+    // capture forever; data timestamps decide the content.
     let deadline = match request.termination {
         CaptureTermination::DurationSeconds(seconds) => {
             Some(Instant::now() + Duration::from_secs(seconds))
@@ -244,15 +243,26 @@ fn configure_clock(
         .and_then(|()| handle.params(&params));
     match configured {
         Ok(()) => Ok(AlsaClock::MonotonicRaw),
-        Err(error) if is_unsupported(&error) => {
-            if allow_userspace {
-                Ok(AlsaClock::Userspace)
-            } else {
-                Err(AppError::AlsaTimestampUnsupported)
-            }
-        }
-        Err(error) => Err(map_open_error(&error, device)),
+        Err(error) => resolve_timestamp_setup(&error, device, allow_userspace),
     }
+}
+
+/// Decides between the explicit userspace fallback and a hard error.
+///
+/// Timestamped reads are mandatory unless the device rejects them
+/// (`EINVAL`/`ENOTTY`) *and* the user passed `--allow-userspace-timestamps`.
+fn resolve_timestamp_setup(
+    error: &alsa::Error,
+    device: &str,
+    allow_userspace: bool,
+) -> Result<AlsaClock, AppError> {
+    if is_unsupported(error) {
+        if allow_userspace {
+            return Ok(AlsaClock::Userspace);
+        }
+        return Err(AppError::AlsaTimestampUnsupported);
+    }
+    Err(map_open_error(error, device))
 }
 
 fn is_unsupported(error: &alsa::Error) -> bool {
@@ -311,9 +321,35 @@ pub(super) fn record_alsa_bytes(
 #[cfg(test)]
 mod tests {
     use crate::capture::MidiParser;
-    use crate::{CapturedEvent, TimestampMetadata};
+    use crate::{AppError, CapturedEvent, TimestampMetadata};
 
-    use super::{AlsaClock, record_alsa_bytes};
+    use super::{AlsaClock, record_alsa_bytes, resolve_timestamp_setup};
+
+    fn alsa_error(func: &'static str, errno: libc::c_int) -> alsa::Error {
+        alsa::Error::new(func, -errno)
+    }
+
+    #[test]
+    fn unsupported_timestamp_mode_requires_an_explicit_fallback_flag() {
+        let error = alsa_error("snd_rawmidi_params", libc::EINVAL);
+        assert!(matches!(
+            resolve_timestamp_setup(&error, "hw:1,0,0", false),
+            Err(AppError::AlsaTimestampUnsupported)
+        ));
+        assert!(matches!(
+            resolve_timestamp_setup(&error, "hw:1,0,0", true),
+            Ok(AlsaClock::Userspace)
+        ));
+    }
+
+    #[test]
+    fn unrelated_setup_failures_are_not_treated_as_unsupported() {
+        let error = alsa_error("snd_rawmidi_params", libc::EBUSY);
+        assert!(matches!(
+            resolve_timestamp_setup(&error, "hw:1,0,0", true),
+            Err(AppError::AlsaBusy { .. })
+        ));
+    }
 
     #[test]
     fn chunks_keep_their_kernel_timestamps() {
