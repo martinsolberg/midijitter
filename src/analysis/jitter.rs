@@ -1,15 +1,19 @@
+use serde::Serialize;
+
 use super::{fit::Fit, indexing::IndexedEvent, statistics};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AnalysisResult {
     pub measured_bpm: f64,
+    pub fitted_period_ns: f64,
+    pub intercept_ns: f64,
     pub phase: PhaseStatistics,
     pub period: PeriodStatistics,
     pub exclusions: ExclusionCounts,
     pub rows: Vec<AnalysisRow>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AnalysisRow {
     pub sequence: u64,
     pub timestamp_ns: i128,
@@ -20,7 +24,7 @@ pub struct AnalysisRow {
     pub phase_error_ns: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExclusionCounts {
     pub non_clock_events: usize,
     pub duplicate_events: usize,
@@ -31,7 +35,7 @@ pub struct ExclusionCounts {
     pub excluded_from_period_statistics: usize,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PhaseStatistics {
     pub mean_ns: f64,
     pub standard_deviation_ns: f64,
@@ -45,7 +49,7 @@ pub struct PhaseStatistics {
     pub peak_to_peak_ns: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PeriodStatistics {
     pub mean_interval_ns: f64,
     pub standard_deviation_ns: f64,
@@ -100,6 +104,8 @@ pub(crate) fn build_result(
 
     AnalysisResult {
         measured_bpm: 60_000_000_000.0 / (fit.period_ns * 24.0),
+        fitted_period_ns: fit.period_ns,
+        intercept_ns: fit.intercept_ns,
         phase: PhaseStatistics {
             mean_ns: phase.mean,
             standard_deviation_ns: phase.standard_deviation,

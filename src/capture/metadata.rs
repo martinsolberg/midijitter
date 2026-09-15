@@ -23,6 +23,7 @@ pub struct GraphTransition {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TimestampMetadata {
+    #[serde(rename = "pipewire")]
     PipeWire(PipeWireTimestamp),
 }
 

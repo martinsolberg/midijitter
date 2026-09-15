@@ -8,7 +8,7 @@ fn load_fixture(name: &str) -> CaptureFile {
         .join("fixtures")
         .join(name);
     let json = std::fs::read_to_string(path).unwrap();
-    CaptureFile::from_json_str(&json.replace("\"pipewire\"", "\"pipe_wire\"")).unwrap()
+    CaptureFile::from_json_str(&json).unwrap()
 }
 
 fn capture_with_clock_timestamps(timestamps_ns: &[i128]) -> CaptureFile {
@@ -21,7 +21,7 @@ fn capture_with_clock_timestamps(timestamps_ns: &[i128]) -> CaptureFile {
                 "timestamp_ns": timestamp_ns,
                 "event": "clock",
                 "timestamp_metadata": {
-                    "pipe_wire": {
+                    "pipewire": {
                         "cycle_position": 0,
                         "event_offset": 0,
                         "event_position": 0,

@@ -11,6 +11,21 @@ pub enum AppError {
     #[error("invalid capture JSON: {0}")]
     CaptureJson(#[from] serde_json::Error),
 
+    #[error("cannot read capture file \"{path}\": {message}")]
+    CaptureFileRead { path: String, message: String },
+
+    #[error("cannot write file \"{path}\": {message}")]
+    FileWrite { path: String, message: String },
+
+    #[error("CSV output failed: {0}")]
+    Csv(#[from] csv::Error),
+
+    #[error("cannot install interrupt handler: {0}")]
+    SignalHandler(String),
+
+    #[error("no MIDI Clock messages were captured")]
+    NoClockEvents,
+
     #[error("clock analysis did not converge")]
     AnalysisDidNotConverge,
 

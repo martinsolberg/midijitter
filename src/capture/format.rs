@@ -28,6 +28,23 @@ impl CaptureFile {
         Ok(capture)
     }
 
+    pub fn read_from_file(path: &std::path::Path) -> Result<Self, AppError> {
+        let input = std::fs::read_to_string(path).map_err(|error| AppError::CaptureFileRead {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })?;
+        Self::from_json_str(&input)
+    }
+
+    pub fn write_to_file(&self, path: &std::path::Path) -> Result<(), AppError> {
+        self.validate()?;
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json).map_err(|error| AppError::FileWrite {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })
+    }
+
     pub fn validate(&self) -> Result<(), AppError> {
         if self.format_version != CURRENT_FORMAT_VERSION {
             return Err(AppError::UnsupportedCaptureFormat(self.format_version));

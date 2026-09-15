@@ -157,10 +157,22 @@ pub(super) fn record(request: CaptureRequest) -> Result<CaptureFile, AppError> {
             detail: error.to_string(),
         })?;
 
+    // Ctrl-C / SIGTERM set an async-signal-safe flag; the timer below
+    // observes it on the main-loop thread and quits cleanly, so the process
+    // callback itself never handles signals.
+    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        signal_hook::flag::register(signal, std::sync::Arc::clone(&interrupted))
+            .map_err(|error| AppError::SignalHandler(error.to_string()))?;
+    }
+
     let stop_loop = main_loop.clone();
     let stop_state = Rc::clone(&state);
+    let interrupted_state = std::sync::Arc::clone(&interrupted);
     let timer = main_loop.loop_().add_timer(move |_| {
-        if stop_state.borrow().stop.load(Ordering::Acquire) != STOP_NONE {
+        if stop_state.borrow().stop.load(Ordering::Acquire) != STOP_NONE
+            || interrupted_state.load(Ordering::Acquire)
+        {
             stop_loop.quit();
         }
     });
@@ -171,6 +183,14 @@ pub(super) fn record(request: CaptureRequest) -> Result<CaptureFile, AppError> {
     main_loop.run();
 
     let mut state = state.borrow_mut();
+    // An interrupt ends the bounded capture early; valid captured events are
+    // retained and reported as a partial capture.
+    if state.stop.load(Ordering::Acquire) == STOP_NONE && interrupted.load(Ordering::Acquire) {
+        if state.events.is_empty() {
+            return Err(AppError::NoClockEvents);
+        }
+        state.stop.store(STOP_COMPLETE, Ordering::Release);
+    }
     match state.stop.load(Ordering::Acquire) {
         STOP_COMPLETE => {}
         STOP_OVERFLOW => return Err(AppError::CaptureOverflow),
@@ -188,6 +208,9 @@ pub(super) fn record(request: CaptureRequest) -> Result<CaptureFile, AppError> {
                     .to_owned(),
             });
         }
+    }
+    if state.events.is_empty() {
+        return Err(AppError::NoClockEvents);
     }
     super::timing::normalize_pipewire_event_timestamps(&mut state.events)?;
     Ok(CaptureFile {
