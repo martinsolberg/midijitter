@@ -25,6 +25,7 @@ pub fn format_json_report(
         "missing_clocks": analysis.exclusions.inferred_missing_ticks,
         "duplicate_clocks": analysis.exclusions.duplicate_events,
         "anomalous_clocks": analysis.exclusions.anomalous_events,
+        "transient_clocks": analysis.exclusions.transient_events,
         "rate_changes": timing.rate_changes,
         "quantum_changes": timing.quantum_changes,
         "starts": starts,

@@ -75,6 +75,10 @@ pub fn format_report(capture: &CaptureFile, analysis: &AnalysisResult) -> String
         analysis.exclusions.anomalous_events
     ));
     report.push_str(&format!(
+        "  Startup transient    {}\n",
+        analysis.exclusions.transient_events
+    ));
+    report.push_str(&format!(
         "  Excluded from fit      {}\n",
         analysis.exclusions.excluded_from_regression
     ));

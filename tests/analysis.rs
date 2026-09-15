@@ -254,3 +254,27 @@ fn settle_zero_disables_transient_marking() {
     );
     assert_eq!(analysis.exclusions.transient_events, 0);
 }
+
+#[test]
+fn transient_events_are_counted_as_excluded() {
+    let mut timestamps = vec![0, 0, 0];
+    let mut time = 2_000_000i128;
+    for _ in 0..60 {
+        timestamps.push(time);
+        time += 20_833_333;
+    }
+    let capture = capture_with_clock_timestamps(&timestamps);
+    let analysis = analyze(
+        &capture,
+        AnalysisOptions {
+            settle_ns: 1_000_000_000,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(analysis.exclusions.transient_events >= 3);
+    assert!(analysis.exclusions.excluded_from_regression >= analysis.exclusions.transient_events);
+    assert!(
+        analysis.exclusions.excluded_from_phase_statistics >= analysis.exclusions.transient_events
+    );
+}

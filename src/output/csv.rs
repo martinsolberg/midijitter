@@ -74,6 +74,7 @@ pub fn write_csv_report(
                 if previous_valid
                     && !row.duplicate
                     && !row.anomalous
+                    && !row.transient
                     && row.tick_index == previous_tick + 1 =>
             {
                 milliseconds((row.timestamp_ns - previous_ns) as f64 - analysis.fitted_period_ns)
@@ -100,7 +101,7 @@ pub fn write_csv_report(
 
         previous = Some((
             row.timestamp_ns,
-            !row.duplicate && !row.anomalous,
+            !row.duplicate && !row.anomalous && !row.transient,
             row.tick_index,
         ));
     }
