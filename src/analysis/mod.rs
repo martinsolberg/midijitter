@@ -28,6 +28,10 @@ pub fn analyze(
     capture: &CaptureFile,
     options: AnalysisOptions,
 ) -> Result<AnalysisResult, AppError> {
+    if !capture.transitions.is_empty() {
+        return Err(AppError::GraphRateTransitionUnsupported);
+    }
+
     let clock_events: Vec<_> = capture
         .events
         .iter()
