@@ -176,8 +176,9 @@ pub fn generate(config: SimulateConfig) -> Result<CaptureFile, AppError> {
     for tick in 0..tick_count {
         let tick_time = tick as f64 * period_ns;
         // Integrated linear drift: period grows by `drift_per_second`
-        // relative per second, so phase gains a quadratic term.
-        let ideal = tick_time + config.drift_per_second * tick_time * tick_time / 2.0;
+        // relative per second, so phase gains a quadratic term. Times are in
+        // nanoseconds, hence the squared term is scaled back to seconds.
+        let ideal = tick_time + config.drift_per_second * tick_time * tick_time / 2_000_000_000.0;
         let jitter = rng.gaussian() * config.jitter_std_ns
             + config.periodic_jitter_ns
                 * (2.0 * PI * config.periodic_hz * ideal / 1_000_000_000.0).sin();
