@@ -32,7 +32,9 @@ pub fn render_phase_plot(
     let times: Vec<f64> = points.iter().map(|point| point.0).collect();
     let errors: Vec<f64> = points.iter().map(|point| point.1).collect();
     let (x_min, x_max) = series_range(&times, 1.0)?;
-    let (y_min, y_max) = series_range(&errors, 1.0)?;
+    let (mut y_min, mut y_max) = series_range(&errors, 1.0)?;
+    y_min = y_min.min(0.0);
+    y_max = y_max.max(0.0);
 
     let root = drawing_root(path)?;
     let mut chart = ChartBuilder::on(&root)
