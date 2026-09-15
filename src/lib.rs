@@ -1,6 +1,7 @@
 pub mod analysis;
 pub mod backend;
 pub mod capture;
+pub mod cli;
 pub mod error;
 
 pub use analysis::{

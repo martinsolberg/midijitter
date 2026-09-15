@@ -19,4 +19,33 @@ pub enum AppError {
 
     #[error("PipeWire timestamp arithmetic overflowed")]
     TimestampArithmeticOverflow,
+
+    #[error("PipeWire daemon unavailable: {detail}")]
+    PipeWireUnavailable { detail: String },
+
+    #[error("PipeWire permission denied: {detail}")]
+    PipeWirePermissionDenied { detail: String },
+
+    #[error("no MIDI source is available")]
+    NoSource,
+
+    #[error("source selector \"{selector}\" is ambiguous; use one of: {}", candidates.join(", "))]
+    AmbiguousSource {
+        selector: String,
+        candidates: Vec<String>,
+    },
+
+    #[error("MIDI source \"{selector}\" was not found")]
+    SourceNotFound { selector: String },
+}
+
+impl AppError {
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Self::PipeWireUnavailable { .. } => 3,
+            Self::PipeWirePermissionDenied { .. } => 4,
+            Self::NoSource | Self::AmbiguousSource { .. } | Self::SourceNotFound { .. } => 5,
+            _ => 1,
+        }
+    }
 }
