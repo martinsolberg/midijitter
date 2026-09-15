@@ -1,15 +1,15 @@
 use super::common::{
-    CaptureState, STOP_COMPLETE, STOP_NONE, STOP_SOURCE_GONE, STOP_STREAM_ERROR,
-    STOP_UNSUPPORTED_FORMAT, event_capacity, finish_capture, pipewire_unavailable, record_cycle,
-    spa_sequence_from_bytes,
+    CaptureData, STOP_COMPLETE, STOP_NONE, STOP_SOURCE_GONE, STOP_STREAM_ERROR,
+    STOP_UNSUPPORTED_FORMAT, SharedControl, event_capacity, finish_capture,
+    link_announcement_needed, pipewire_unavailable, record_cycle, spa_sequence_from_bytes,
 };
-use crate::backend::CaptureRequest;
+use crate::backend::{CaptureRequest, CaptureTermination};
 use crate::{AppError, CaptureFile};
 use pipewire as pw;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::ffi::{CStr, CString, c_void};
 use std::ptr;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -48,11 +48,14 @@ pub(super) fn position_timing(
     })
 }
 
-/// State shared between the main-loop thread and the realtime process
-/// callback. Same threading contract as the stream path: the callback only
-/// appends to preallocated storage and flips the stop flag.
+/// Handle shared with the realtime process callback. Capture data is owned
+/// exclusively by the callback side while the graph runs; the main-loop
+/// thread only touches the Sync control block. This replaces the previous
+/// Rc<RefCell> sharing, which could panic when the timer and the process
+/// callback borrowed concurrently.
 struct FilterShared {
-    state: Rc<RefCell<CaptureState>>,
+    data: *mut CaptureData,
+    control: Arc<SharedControl>,
     port: Cell<*mut c_void>,
 }
 
@@ -65,17 +68,30 @@ pub(super) fn run_filter_capture(request: &CaptureRequest) -> Result<CaptureFile
     let _core = context.connect_rc(None).map_err(pipewire_unavailable)?;
     let raw_loop = unsafe { pw::sys::pw_main_loop_get_loop(main_loop.as_raw_ptr()) };
 
+    // Ctrl-C / SIGTERM set an async-signal-safe flag; the timer below
+    // observes it on the main-loop thread and quits cleanly, so the process
+    // callback itself never handles signals. Registered before any raw
+    // allocation so `?` exits cannot leak it.
+    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        signal_hook::flag::register(signal, std::sync::Arc::clone(&interrupted))
+            .map_err(|error| AppError::SignalHandler(error.to_string()))?;
+    }
+
+    let data_ptr: *mut CaptureData = Box::into_raw(Box::new(CaptureData::new(
+        request.termination.clone(),
+        capacity,
+    )));
+    let control = Arc::new(SharedControl::new());
     let shared = Box::into_raw(Box::new(FilterShared {
-        state: Rc::new(RefCell::new(CaptureState::new(
-            request.termination.clone(),
-            capacity,
-        ))),
+        data: data_ptr,
+        control: Arc::clone(&control),
         port: Cell::new(ptr::null_mut()),
     }));
 
     let filter_props = unsafe { pw::sys::pw_properties_new(ptr::null()) };
     if filter_props.is_null() {
-        reclaim(shared);
+        abandon(data_ptr, shared);
         return Err(AppError::PipeWireNegotiationFailed {
             detail: "could not allocate PipeWire filter properties".to_owned(),
         });
@@ -86,7 +102,7 @@ pub(super) fn run_filter_capture(request: &CaptureRequest) -> Result<CaptureFile
     set_str(filter_props, "node.name", "midijitter-capture");
 
     let name = CString::new("midijitter-capture").map_err(|_| {
-        reclaim(shared);
+        abandon(data_ptr, shared);
         AppError::PipeWireNegotiationFailed {
             detail: "invalid filter node name".to_owned(),
         }
@@ -107,7 +123,7 @@ pub(super) fn run_filter_capture(request: &CaptureRequest) -> Result<CaptureFile
         )
     };
     if filter.is_null() {
-        reclaim(shared);
+        abandon(data_ptr, shared);
         return Err(AppError::PipeWireNegotiationFailed {
             detail: "PipeWire refused to create the MIDI filter".to_owned(),
         });
@@ -116,6 +132,7 @@ pub(super) fn run_filter_capture(request: &CaptureRequest) -> Result<CaptureFile
     let port_props = unsafe { pw::sys::pw_properties_new(ptr::null()) };
     if port_props.is_null() {
         destroy(filter, shared);
+        drop(unsafe { Box::from_raw(data_ptr) });
         return Err(AppError::PipeWireNegotiationFailed {
             detail: "could not allocate PipeWire filter port properties".to_owned(),
         });
@@ -142,6 +159,7 @@ pub(super) fn run_filter_capture(request: &CaptureRequest) -> Result<CaptureFile
     };
     if port.is_null() {
         destroy(filter, shared);
+        drop(unsafe { Box::from_raw(data_ptr) });
         return Err(AppError::PipeWireNegotiationFailed {
             detail: "PipeWire refused to add the MIDI filter port".to_owned(),
         });
@@ -158,6 +176,7 @@ pub(super) fn run_filter_capture(request: &CaptureRequest) -> Result<CaptureFile
     };
     if connected != 0 {
         destroy(filter, shared);
+        drop(unsafe { Box::from_raw(data_ptr) });
         return Err(AppError::PipeWireNegotiationFailed {
             detail: "PipeWire refused to connect the MIDI filter".to_owned(),
         });
@@ -167,45 +186,37 @@ pub(super) fn run_filter_capture(request: &CaptureRequest) -> Result<CaptureFile
         println!("Sink: midijitter-capture:input_1  (use a patchbay to link your source)");
     }
 
-    // Ctrl-C / SIGTERM set an async-signal-safe flag; the timer below
-    // observes it on the main-loop thread and quits cleanly, so the process
-    // callback itself never handles signals.
-    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
-        signal_hook::flag::register(signal, std::sync::Arc::clone(&interrupted))
-            .map_err(|error| AppError::SignalHandler(error.to_string()))?;
-    }
-
     let started = Instant::now();
     let liveness_bound = match request.termination {
-        crate::backend::CaptureTermination::DurationSeconds(seconds) => {
+        CaptureTermination::DurationSeconds(seconds) => {
             Some(Duration::from_secs(seconds) + LIVENESS_GRACE)
         }
-        crate::backend::CaptureTermination::Ticks(_) => None,
+        CaptureTermination::Ticks(_) => None,
     };
+    let manual_connect = request.manual_connect;
+    let announced = Cell::new(false);
     let stop_loop = main_loop.clone();
-    let stop_shared = shared;
+    let timer_control = Arc::clone(&control);
     let interrupted_state = std::sync::Arc::clone(&interrupted);
     let timer = main_loop.loop_().add_timer(move |_| {
-        // SAFETY: `shared` is reclaimed only after `main_loop.run()`
-        // returns, so it outlives this timer.
-        let shared = unsafe { &*stop_shared };
-        if shared.state.borrow().stop_reason() != STOP_NONE
-            || interrupted_state.load(Ordering::Acquire)
-        {
+        if timer_control.stop_reason() != STOP_NONE || interrupted_state.load(Ordering::Acquire) {
             stop_loop.quit();
             return;
+        }
+        if link_announcement_needed(manual_connect, timer_control.is_streamed(), announced.get()) {
+            println!("Link active: recording started.");
+            announced.set(true);
         }
         // Liveness bound for runs whose filter never streams (no link, hence
         // no process callbacks): end cleanly with NoClockEvents instead of
         // hanging. Only applies while nothing was captured, so it can never
         // discard timestamped data.
-        if let Some(bound) = liveness_bound {
-            let idle = !shared.state.borrow().has_events();
-            if idle && started.elapsed() >= bound {
-                shared.state.borrow().request_stop(STOP_COMPLETE);
-                stop_loop.quit();
-            }
+        if let Some(bound) = liveness_bound
+            && timer_control.event_count() == 0
+            && started.elapsed() >= bound
+        {
+            timer_control.request_stop(STOP_COMPLETE);
+            stop_loop.quit();
         }
     });
     timer.update_timer(
@@ -213,13 +224,13 @@ pub(super) fn run_filter_capture(request: &CaptureRequest) -> Result<CaptureFile
         Some(Duration::from_millis(1)),
     );
     main_loop.run();
-    // Clone the state handle before teardown frees the shared box.
-    let state_ref = unsafe { &*shared }.state.clone();
     destroy(filter, shared);
 
     let interrupted = interrupted.load(Ordering::Acquire);
-    let mut guard = state_ref.borrow_mut();
-    finish_capture(&mut guard, interrupted, request)
+    // SAFETY: same contract as the process callback below; the filter is
+    // disconnected and destroyed, so this is now exclusive.
+    let mut data = unsafe { Box::from_raw(data_ptr) };
+    finish_capture(&mut data, &control, interrupted, request)
 }
 
 fn set_str(props: *mut pw::sys::pw_properties, key: &str, value: &str) {
@@ -229,18 +240,22 @@ fn set_str(props: *mut pw::sys::pw_properties, key: &str, value: &str) {
     unsafe { pw::sys::pw_properties_set(props, key.as_ptr(), value.as_ptr()) };
 }
 
-fn reclaim(shared: *mut FilterShared) {
-    // SAFETY: `shared` came from `Box::into_raw` and is reclaimed exactly once.
+/// Reclaims both raw boxes on setup-failure paths where no callback could
+/// have fired yet, so reclamation is trivially exclusive.
+fn abandon(data: *mut CaptureData, shared: *mut FilterShared) {
+    drop(unsafe { Box::from_raw(data) });
     drop(unsafe { Box::from_raw(shared) });
 }
 
 fn destroy(filter: *mut pw::sys::pw_filter, shared: *mut FilterShared) {
-    // SAFETY: both pointers are live; disconnect stops callbacks before destroy.
+    // SAFETY: both pointers are live; disconnect stops callbacks before
+    // destroy, and the shared box is reclaimed exactly once. The capture
+    // data box is reclaimed separately by the caller.
     unsafe {
         pw::sys::pw_filter_disconnect(filter);
         pw::sys::pw_filter_destroy(filter);
     }
-    reclaim(shared);
+    drop(unsafe { Box::from_raw(shared) });
 }
 
 unsafe extern "C" fn on_process(data: *mut c_void, position: *mut pw::spa::sys::spa_io_position) {
@@ -280,12 +295,15 @@ fn process_filter_buffer(
     // SAFETY: `buffer` is a live dequeued buffer, recycled by the caller.
     let sequence = unsafe { filter_sequence(buffer) };
     let Some(sequence) = sequence else {
-        shared.state.borrow().request_stop(STOP_UNSUPPORTED_FORMAT);
+        shared.control.request_stop(STOP_UNSUPPORTED_FORMAT);
         return;
     };
-    let mut state = shared.state.borrow_mut();
+    // SAFETY: capture data is owned by the callback side while the graph
+    // runs; the main-loop thread only touches the Sync control block.
+    let data = unsafe { &mut *shared.data };
     record_cycle(
-        &mut state,
+        data,
+        &shared.control,
         sequence,
         timing.cycle_ticks,
         timing.rate_num,
@@ -348,7 +366,7 @@ unsafe extern "C" fn on_state_changed(
     let shared = unsafe { &*(data as *const FilterShared) };
     match state {
         pw::sys::pw_filter_state_PW_FILTER_STATE_STREAMING => {
-            shared.state.borrow_mut().mark_streamed();
+            shared.control.mark_streamed();
         }
         pw::sys::pw_filter_state_PW_FILTER_STATE_ERROR => {
             let detail = if error.is_null() {
@@ -357,13 +375,11 @@ unsafe extern "C" fn on_state_changed(
                 // SAFETY: PipeWire provides a valid NUL-terminated message.
                 unsafe { CStr::from_ptr(error).to_string_lossy().into_owned() }
             };
-            shared.state.borrow().set_stream_error(detail);
-            shared.state.borrow().request_stop(STOP_STREAM_ERROR);
+            shared.control.set_error(detail);
+            shared.control.request_stop(STOP_STREAM_ERROR);
         }
-        pw::sys::pw_filter_state_PW_FILTER_STATE_UNCONNECTED
-            if shared.state.borrow().is_streamed() =>
-        {
-            shared.state.borrow().request_stop(STOP_SOURCE_GONE);
+        pw::sys::pw_filter_state_PW_FILTER_STATE_UNCONNECTED if shared.control.is_streamed() => {
+            shared.control.request_stop(STOP_SOURCE_GONE);
         }
         _ => {}
     }
