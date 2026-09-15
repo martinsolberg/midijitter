@@ -27,9 +27,7 @@ pub(super) fn midi_sources() -> Result<Vec<MidiSource>, AppError> {
             let Some(properties) = global.props.as_ref() else {
                 return;
             };
-            if properties.get("media.type") != Some("Midi")
-                || properties.get("port.direction") != Some("out")
-            {
+            if !is_midi_source_port(properties) {
                 return;
             }
 
@@ -47,6 +45,7 @@ pub(super) fn midi_sources() -> Result<Vec<MidiSource>, AppError> {
             let display_name = properties
                 .get("node.description")
                 .or_else(|| properties.get("node.nick"))
+                .or_else(|| properties.get("port.name"))
                 .unwrap_or(&node_name)
                 .to_owned();
 
@@ -105,6 +104,20 @@ fn source_snapshot(sources: &Rc<RefCell<Vec<MidiSource>>>) -> Vec<MidiSource> {
     sources.borrow().clone()
 }
 
+/// Whether a PipeWire port object is a MIDI *source* (capture-side) port.
+///
+/// PipeWire's ALSA sequencer bridge exposes MIDI ports whose `format.dsp` is
+/// `"8 bit raw midi"` (or `"8 bit raw ump"` for UMP ports) and does not set a
+/// `media.type` property on the Port object. Some other bridges (e.g. JACK)
+/// instead set `media.type = "Midi"`, so that marker is accepted defensively.
+fn is_midi_source_port(props: &pw::spa::utils::dict::DictRef) -> bool {
+    let format = props.get("format.dsp").unwrap_or_default();
+    let is_raw_midi = format.contains("midi") || format.contains("ump");
+    let is_midi =
+        props.get("media.type") == Some("Midi") || (format.starts_with("8 bit raw") && is_raw_midi);
+    is_midi && props.get("port.direction") == Some("out")
+}
+
 fn pipewire_unavailable(error: pw::Error) -> AppError {
     AppError::PipeWireUnavailable {
         detail: error.to_string(),
@@ -122,6 +135,63 @@ fn pipewire_remote_error(message: String) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn is_midi(props: &pw::spa::utils::dict::DictRef) -> bool {
+        is_midi_source_port(props)
+    }
+
+    #[test]
+    fn seq_bridge_capture_ports_are_midi_sources() {
+        let props = pw::spa::static_dict! {
+            "format.dsp" => "8 bit raw midi",
+            "port.direction" => "out",
+        };
+        assert!(is_midi(&props));
+    }
+
+    #[test]
+    fn seq_bridge_playback_ports_are_not_sources() {
+        let props = pw::spa::static_dict! {
+            "format.dsp" => "8 bit raw midi",
+            "port.direction" => "in",
+        };
+        assert!(!is_midi(&props));
+    }
+
+    #[test]
+    fn media_type_marker_is_accepted_for_other_bridges() {
+        let props = pw::spa::static_dict! {
+            "media.type" => "Midi",
+            "port.direction" => "out",
+        };
+        assert!(is_midi(&props));
+    }
+
+    #[test]
+    fn audio_ports_are_rejected() {
+        let props = pw::spa::static_dict! {
+            "format.dsp" => "32 bit float mono audio",
+            "port.direction" => "out",
+        };
+        assert!(!is_midi(&props));
+    }
+
+    #[test]
+    fn ump_ports_are_midi_sources() {
+        let props = pw::spa::static_dict! {
+            "format.dsp" => "8 bit raw ump",
+            "port.direction" => "out",
+        };
+        assert!(is_midi(&props));
+    }
+
+    #[test]
+    fn missing_format_is_rejected() {
+        let props = pw::spa::static_dict! {
+            "port.direction" => "out",
+        };
+        assert!(!is_midi(&props));
+    }
 
     #[test]
     fn source_snapshot_does_not_require_sole_rc_ownership() {

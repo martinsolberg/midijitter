@@ -27,6 +27,7 @@ const STOP_UNSUPPORTED_FORMAT: u8 = 3;
 const STOP_SOURCE_GONE: u8 = 4;
 const STOP_NEGOTIATION_FAILURE: u8 = 5;
 const STOP_TIMESTAMP_ERROR: u8 = 6;
+const STOP_STREAM_ERROR: u8 = 7;
 
 struct CaptureState {
     parser: MidiParser,
@@ -38,6 +39,7 @@ struct CaptureState {
     termination: CaptureTermination,
     stop: AtomicU8,
     streamed: bool,
+    stream_error: std::cell::RefCell<Option<String>>,
 }
 
 impl CaptureState {
@@ -52,6 +54,7 @@ impl CaptureState {
             termination,
             stop: AtomicU8::new(STOP_NONE),
             streamed: false,
+            stream_error: std::cell::RefCell::new(None),
         }
     }
 
@@ -128,7 +131,10 @@ pub(super) fn record(request: CaptureRequest) -> Result<CaptureFile, AppError> {
             let mut state = state_change_state.borrow_mut();
             match new {
                 pw::stream::StreamState::Streaming => state.streamed = true,
-                pw::stream::StreamState::Error(_) => state.request_stop(STOP_SOURCE_GONE),
+                pw::stream::StreamState::Error(message) => {
+                    state.stream_error.borrow_mut().clone_from(&Some(message));
+                    state.request_stop(STOP_STREAM_ERROR);
+                }
                 pw::stream::StreamState::Unconnected if state.streamed => {
                     state.request_stop(STOP_SOURCE_GONE)
                 }
@@ -202,6 +208,14 @@ pub(super) fn record(request: CaptureRequest) -> Result<CaptureFile, AppError> {
             });
         }
         STOP_TIMESTAMP_ERROR => return Err(AppError::TimestampArithmeticOverflow),
+        STOP_STREAM_ERROR => {
+            let detail = state
+                .stream_error
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| "PipeWire stream entered the error state".to_owned());
+            return Err(AppError::PipeWireNegotiationFailed { detail });
+        }
         _ => {
             return Err(AppError::PipeWireNegotiationFailed {
                 detail: "PipeWire capture stopped before a bounded termination condition"
