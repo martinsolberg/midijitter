@@ -64,7 +64,7 @@ pub(crate) fn build_result(
     indexed: &[IndexedEvent<'_>],
     fit: Fit,
     event_count: usize,
-) -> AnalysisResult {
+) -> Result<AnalysisResult, crate::AppError> {
     let rows: Vec<_> = indexed
         .iter()
         .map(|row| AnalysisRow {
@@ -92,6 +92,11 @@ pub(crate) fn build_result(
         .iter()
         .map(|interval| interval - fit.period_ns)
         .collect();
+    if intervals.is_empty() {
+        return Err(crate::AppError::InvalidCapture(
+            "clock analysis requires a normal one-tick interval".to_owned(),
+        ));
+    }
     let phase = statistics::summarize(&phase_errors);
     let interval = statistics::summarize(&intervals);
     let period_error = statistics::summarize(&period_errors);
@@ -102,7 +107,7 @@ pub(crate) fn build_result(
         .filter(|pair| !is_normal_one_tick_interval(pair))
         .count();
 
-    AnalysisResult {
+    Ok(AnalysisResult {
         measured_bpm: 60_000_000_000.0 / (fit.period_ns * 24.0),
         fitted_period_ns: fit.period_ns,
         intercept_ns: fit.intercept_ns,
@@ -141,7 +146,7 @@ pub(crate) fn build_result(
             excluded_from_period_statistics: excluded_period,
         },
         rows,
-    }
+    })
 }
 
 fn is_normal_one_tick_interval(pair: &[AnalysisRow]) -> bool {

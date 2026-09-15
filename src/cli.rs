@@ -232,13 +232,11 @@ fn run_record(
         Backend::Pipewire => {
             println!("Backend: PipeWire");
             println!("Source: {}", selected.display_name);
-            println!("Timestamping: PipeWire graph position + event offset");
         }
         Backend::AlsaRaw => {
             println!("Backend: ALSA RawMIDI");
             println!("Source: {}", selected.display_name);
             println!("Device: {}", selected.stable_identity());
-            println!("Timestamping: ALSA timestamped RawMIDI (CLOCK_MONOTONIC_RAW)");
         }
     }
     println!();
@@ -246,6 +244,9 @@ fn run_record(
     let capture = recording.record(request)?;
     capture.write_to_file(&output)?;
 
+    // The effective timestamp method is reported after capture because the
+    // ALSA backend may fall back to explicitly labeled userspace timestamps.
+    println!("Timestamping: {}", capture.timestamp_method);
     if capture.timestamp_method.contains("userspace") {
         eprintln!(
             "Warning: capture used explicitly labeled userspace timestamps, not kernel \
@@ -310,6 +311,17 @@ fn run_analyze(capture: PathBuf, json: bool, csv: Option<PathBuf>) -> Result<(),
 
 fn run_plot(capture: PathBuf, output_dir: PathBuf) -> Result<(), AppError> {
     let capture_file = CaptureFile::read_from_file(&capture)?;
+    if !capture_file.transitions.is_empty() {
+        let clocks = capture_file
+            .events
+            .iter()
+            .filter(|event| event.event == MidiEvent::Clock)
+            .count();
+        for warning in output::warnings(&capture_file, clocks) {
+            eprintln!("{warning}");
+        }
+        return Err(AppError::GraphRateTransitionUnsupported);
+    }
     let analysis = analyze(&capture_file, AnalysisOptions::default())?;
     for created in crate::plot::render_plots(&capture_file, &analysis, &output_dir)? {
         println!("Created: {}", created.display());

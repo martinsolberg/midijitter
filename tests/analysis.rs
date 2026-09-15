@@ -173,6 +173,20 @@ fn inserted_outlier_does_not_shift_following_valid_clock_tick_indices() {
 }
 
 #[test]
+fn duplicate_only_intervals_are_rejected_without_panicking() {
+    // Rows: valid tick 0, duplicate at the same instant, valid tick 1. The
+    // convergence guard passes (a clean step-1 row exists) but no adjacent
+    // pair forms a normal one-tick interval.
+    let capture = capture_with_clock_timestamps(&[0, 0, 20_833_333]);
+
+    assert!(matches!(
+        analyze(&capture, AnalysisOptions::default()),
+        Err(AppError::InvalidCapture(message))
+            if message == "clock analysis requires a normal one-tick interval"
+    ));
+}
+
+#[test]
 fn analysis_stops_after_the_configured_iteration_cap() {
     let capture = load_fixture("outlier.json");
     let options = AnalysisOptions {

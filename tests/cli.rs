@@ -386,6 +386,29 @@ fn rolling_command_rejects_oversized_windows() {
 }
 
 #[test]
+fn plot_rejects_graph_rate_transitions_with_a_warning() {
+    let capture = temp_path("transition.json");
+    std::fs::write(&capture, fixture_capture("transition")).unwrap();
+
+    let output = binary()
+        .args([
+            "plot",
+            &capture.to_string_lossy(),
+            "--output-dir",
+            &temp_path("transition-plots").to_string_lossy(),
+        ])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Warning") && stderr.contains("graph-rate transition"),
+        "expected a transition warning, got: {stderr}"
+    );
+}
+
+#[test]
 fn record_requires_exactly_one_termination_condition() {
     let output = binary()
         .args(["record", "--source", "x", "--output", "out.json"])

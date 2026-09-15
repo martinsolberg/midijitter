@@ -65,7 +65,7 @@ pub fn analyze(
                     "clock analysis requires a normal one-tick interval".to_owned(),
                 ));
             }
-            return Ok(jitter::build_result(&indexed, fit, capture.events.len()));
+            return jitter::build_result(&indexed, fit, capture.events.len());
         }
 
         previous_signature = Some(signature);
