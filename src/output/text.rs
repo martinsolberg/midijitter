@@ -51,12 +51,32 @@ pub fn format_report(capture: &CaptureFile, analysis: &AnalysisResult) -> String
         duration_s(capture)
     ));
     report.push_str(&format!(
+        "  PipeWire version       {}\n",
+        capture
+            .environment
+            .pipewire_version
+            .as_deref()
+            .unwrap_or("unknown")
+    ));
+    report.push_str(&format!(
+        "  Application            {}\n",
+        capture.application_version
+    ));
+    report.push_str(&format!(
         "  Missing clocks         {}\n",
         analysis.exclusions.inferred_missing_ticks
     ));
     report.push_str(&format!(
+        "  Duplicate clocks       {}\n",
+        analysis.exclusions.duplicate_events
+    ));
+    report.push_str(&format!(
         "  Anomalous clocks       {}\n",
-        analysis.exclusions.duplicate_events + analysis.exclusions.anomalous_events
+        analysis.exclusions.anomalous_events
+    ));
+    report.push_str(&format!(
+        "  Excluded from fit      {}\n",
+        analysis.exclusions.excluded_from_regression
     ));
     report.push_str(&format!(
         "  Rate changes           {}\n",
@@ -84,6 +104,10 @@ pub fn format_report(capture: &CaptureFile, analysis: &AnalysisResult) -> String
     let phase = &analysis.phase;
     let has_phase = clock_events > 0;
     report.push_str("\nPhase jitter\n");
+    report.push_str(&format!(
+        "  Mean                   {}\n",
+        maybe_ms(phase.mean_ns, has_phase)
+    ));
     report.push_str(&format!(
         "  RMS                    {}\n",
         maybe_ms(phase.rms_ns, has_phase)

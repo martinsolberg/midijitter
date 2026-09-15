@@ -122,8 +122,11 @@ fn analyze_reports_full_text_metrics_for_a_valid_capture() {
         "Minimum interval",
         "Maximum interval",
         "Missing clocks",
+        "Duplicate clocks",
+        "Excluded from fit",
         "Sample rate",
         "Quantum",
+        "PipeWire version",
         "Warning: only 12 MIDI Clock events were captured",
     ] {
         assert!(stdout.contains(expected), "report is missing {expected:?}");

@@ -146,7 +146,12 @@ fn run_record(
 fn run_analyze(capture: PathBuf, json: bool, csv: Option<PathBuf>) -> Result<(), AppError> {
     let capture_file = CaptureFile::read_from_file(&capture)?;
     if !capture_file.transitions.is_empty() {
-        for warning in output::warnings(&capture_file, capture_file.events.len()) {
+        let clocks = capture_file
+            .events
+            .iter()
+            .filter(|event| event.event == MidiEvent::Clock)
+            .count();
+        for warning in output::warnings(&capture_file, clocks) {
             eprintln!("{warning}");
         }
         return Err(AppError::GraphRateTransitionUnsupported);
