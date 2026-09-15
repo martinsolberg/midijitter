@@ -170,6 +170,18 @@ fn environment_warnings(compared: &[ComparedCapture]) -> Vec<String> {
             .collect(),
     );
     check(
+        "quantum",
+        compared
+            .iter()
+            .map(|entry| {
+                timing_summary(&entry.capture)
+                    .quantum
+                    .map(|quantum| quantum.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned())
+            })
+            .collect(),
+    );
+    check(
         "PipeWire version",
         compared
             .iter()
