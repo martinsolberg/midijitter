@@ -10,4 +10,7 @@ pub enum AppError {
 
     #[error("invalid capture JSON: {0}")]
     CaptureJson(#[from] serde_json::Error),
+
+    #[error("clock analysis did not converge")]
+    AnalysisDidNotConverge,
 }
