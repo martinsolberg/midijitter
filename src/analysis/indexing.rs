@@ -7,6 +7,7 @@ pub(crate) struct IndexedEvent<'a> {
     pub step: i64,
     pub duplicate: bool,
     pub anomalous: bool,
+    pub transient: bool,
 }
 
 pub(crate) fn initial_period(events: &[&CapturedEvent]) -> Result<f64, AppError> {
@@ -39,6 +40,7 @@ pub(crate) fn classify<'a>(
         step: 1,
         duplicate: false,
         anomalous: false,
+        transient: false,
     });
     let mut previous_event = events[0];
     let mut last_included_event = events[0];
@@ -65,6 +67,7 @@ pub(crate) fn classify<'a>(
             step,
             duplicate,
             anomalous: !duplicate && !included,
+            transient: false,
         });
         if included {
             last_included_event = event;
@@ -75,9 +78,9 @@ pub(crate) fn classify<'a>(
     rows
 }
 
-pub(crate) fn signature(rows: &[IndexedEvent<'_>]) -> Vec<(i64, bool, bool)> {
+pub(crate) fn signature(rows: &[IndexedEvent<'_>]) -> Vec<(i64, bool, bool, bool)> {
     rows.iter()
-        .map(|row| (row.step, row.duplicate, row.anomalous))
+        .map(|row| (row.step, row.duplicate, row.anomalous, row.transient))
         .collect()
 }
 

@@ -28,7 +28,7 @@ pub fn rolling_bpm(
     let usable: Vec<&AnalysisRow> = analysis
         .rows
         .iter()
-        .filter(|row| !row.duplicate && !row.anomalous)
+        .filter(|row| !row.duplicate && !row.anomalous && !row.transient)
         .collect();
     if usable.len() < window_ticks + 1 {
         return Err(AppError::InvalidCapture(

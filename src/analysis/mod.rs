@@ -15,6 +15,9 @@ pub struct AnalysisOptions {
     pub max_passes: usize,
     /// Allowed fractional error when an interval represents an integer number of ticks.
     pub integer_multiple_tolerance: f64,
+    /// Events before this offset from capture start are startup-transient:
+    /// kept in rows, excluded from fit and statistics. Zero disables.
+    pub settle_ns: i128,
 }
 
 impl Default for AnalysisOptions {
@@ -22,6 +25,7 @@ impl Default for AnalysisOptions {
         Self {
             max_passes: 10,
             integer_multiple_tolerance: 0.2,
+            settle_ns: 0,
         }
     }
 }
@@ -51,7 +55,17 @@ pub fn analyze(
     let mut previous_signature = None;
 
     for _ in 0..pass_limit {
-        let indexed = indexing::classify(&clock_events, period, options.integer_multiple_tolerance);
+        let mut indexed =
+            indexing::classify(&clock_events, period, options.integer_multiple_tolerance);
+        if options.settle_ns > 0 {
+            let start_ns = clock_events
+                .first()
+                .map(|event| event.timestamp_ns)
+                .unwrap_or(0);
+            for row in &mut indexed {
+                row.transient = row.event.timestamp_ns - start_ns < options.settle_ns;
+            }
+        }
         let signature = indexing::signature(&indexed);
         let fit = fit::least_squares(&indexed)?;
 
@@ -59,7 +73,7 @@ pub fn analyze(
             if !indexed
                 .iter()
                 .skip(1)
-                .any(|row| !row.duplicate && !row.anomalous && row.step == 1)
+                .any(|row| !row.duplicate && !row.anomalous && !row.transient && row.step == 1)
             {
                 return Err(AppError::InvalidCapture(
                     "clock analysis requires a normal one-tick interval".to_owned(),

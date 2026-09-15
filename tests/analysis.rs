@@ -199,3 +199,58 @@ fn analysis_stops_after_the_configured_iteration_cap() {
         Err(AppError::AnalysisDidNotConverge)
     ));
 }
+
+#[test]
+fn settle_window_marks_leading_burst_transient_but_keeps_rows() {
+    // 5 zero-interval events (link-startup flush signature) then 120 perfect
+    // 120 BPM clocks starting 1 ms after capture start.
+    let mut timestamps = vec![0, 0, 0, 0, 0];
+    let mut time = 1_000_000i128;
+    for _ in 0..120 {
+        timestamps.push(time);
+        time += 20_833_333;
+    }
+    let capture = capture_with_clock_timestamps(&timestamps);
+    let analysis = analyze(
+        &capture,
+        AnalysisOptions {
+            settle_ns: 500_000_000,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let transient: Vec<_> = analysis.rows.iter().filter(|row| row.transient).collect();
+    assert!(!transient.is_empty(), "leading burst must be marked");
+    assert_eq!(analysis.rows.len(), timestamps.len(), "rows are preserved");
+    assert!(
+        analysis.rows.iter().filter(|row| !row.transient).count() >= 90,
+        "live traffic stays usable"
+    );
+    let latest_live = analysis
+        .rows
+        .iter()
+        .filter(|row| !row.transient)
+        .map(|row| row.phase_error_ns)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        latest_live < 1_000_000.0,
+        "startup excursion must not leak into live Latest, got {latest_live}"
+    );
+}
+
+#[test]
+fn settle_zero_disables_transient_marking() {
+    let mut timestamps = vec![0, 0, 0];
+    let mut time = 1_000_000i128;
+    for _ in 0..60 {
+        timestamps.push(time);
+        time += 20_833_333;
+    }
+    let capture = capture_with_clock_timestamps(&timestamps);
+    let analysis = analyze(&capture, AnalysisOptions::default()).unwrap();
+    assert!(
+        analysis.rows.iter().all(|row| !row.transient),
+        "default options must mark nothing transient"
+    );
+    assert_eq!(analysis.exclusions.transient_events, 0);
+}

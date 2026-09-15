@@ -21,6 +21,7 @@ pub struct AnalysisRow {
     pub step: i64,
     pub duplicate: bool,
     pub anomalous: bool,
+    pub transient: bool,
     pub phase_error_ns: f64,
 }
 
@@ -29,6 +30,7 @@ pub struct ExclusionCounts {
     pub non_clock_events: usize,
     pub duplicate_events: usize,
     pub anomalous_events: usize,
+    pub transient_events: usize,
     pub inferred_missing_ticks: usize,
     pub excluded_from_regression: usize,
     pub excluded_from_phase_statistics: usize,
@@ -74,13 +76,14 @@ pub(crate) fn build_result(
             step: row.step,
             duplicate: row.duplicate,
             anomalous: row.anomalous,
+            transient: row.transient,
             phase_error_ns: row.event.timestamp_ns as f64
                 - (fit.intercept_ns + fit.period_ns * row.tick_index as f64),
         })
         .collect();
     let phase_errors: Vec<_> = rows
         .iter()
-        .filter(|row| !row.duplicate && !row.anomalous)
+        .filter(|row| !row.duplicate && !row.anomalous && !row.transient)
         .map(|row| row.phase_error_ns)
         .collect();
     let intervals: Vec<_> = rows
@@ -102,6 +105,7 @@ pub(crate) fn build_result(
     let period_error = statistics::summarize(&period_errors);
     let duplicate_events = rows.iter().filter(|row| row.duplicate).count();
     let anomalous_events = rows.iter().filter(|row| row.anomalous).count();
+    let transient_events = rows.iter().filter(|row| row.transient).count();
     let excluded_period = rows
         .windows(2)
         .filter(|pair| !is_normal_one_tick_interval(pair))
@@ -136,13 +140,14 @@ pub(crate) fn build_result(
             non_clock_events: event_count - rows.len(),
             duplicate_events,
             anomalous_events,
+            transient_events,
             inferred_missing_ticks: rows
                 .iter()
                 .filter(|row| row.step > 1)
                 .map(|row| (row.step - 1) as usize)
                 .sum(),
-            excluded_from_regression: duplicate_events + anomalous_events,
-            excluded_from_phase_statistics: duplicate_events + anomalous_events,
+            excluded_from_regression: duplicate_events + anomalous_events + transient_events,
+            excluded_from_phase_statistics: duplicate_events + anomalous_events + transient_events,
             excluded_from_period_statistics: excluded_period,
         },
         rows,
@@ -156,7 +161,9 @@ fn is_normal_one_tick_interval(pair: &[AnalysisRow]) -> bool {
 
     !previous.duplicate
         && !previous.anomalous
+        && !previous.transient
         && !current.duplicate
         && !current.anomalous
+        && !current.transient
         && current.tick_index == previous.tick_index + 1
 }
