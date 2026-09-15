@@ -81,7 +81,7 @@ pub(crate) fn build_result(
         .collect();
     let intervals: Vec<_> = rows
         .windows(2)
-        .filter(|pair| !pair[1].duplicate && !pair[1].anomalous && pair[1].step == 1)
+        .filter(|pair| is_normal_one_tick_interval(pair))
         .map(|pair| (pair[1].timestamp_ns - pair[0].timestamp_ns) as f64)
         .collect();
     let period_errors: Vec<_> = intervals
@@ -94,9 +94,8 @@ pub(crate) fn build_result(
     let duplicate_events = rows.iter().filter(|row| row.duplicate).count();
     let anomalous_events = rows.iter().filter(|row| row.anomalous).count();
     let excluded_period = rows
-        .iter()
-        .skip(1)
-        .filter(|row| row.duplicate || row.anomalous || row.step != 1)
+        .windows(2)
+        .filter(|pair| !is_normal_one_tick_interval(pair))
         .count();
 
     AnalysisResult {
@@ -137,4 +136,16 @@ pub(crate) fn build_result(
         },
         rows,
     }
+}
+
+fn is_normal_one_tick_interval(pair: &[AnalysisRow]) -> bool {
+    let [previous, current] = pair else {
+        return false;
+    };
+
+    !previous.duplicate
+        && !previous.anomalous
+        && !current.duplicate
+        && !current.anomalous
+        && current.tick_index == previous.tick_index + 1
 }

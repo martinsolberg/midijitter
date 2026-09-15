@@ -123,6 +123,22 @@ fn duplicate_ticks_remain_in_rows_but_are_excluded_from_statistics() {
 }
 
 #[test]
+fn out_of_order_duplicate_excludes_both_adjacent_periods_but_remains_a_row() {
+    let result = analyze(
+        &load_fixture("out-of-order-duplicate.json"),
+        AnalysisOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(result.rows.len(), 7);
+    assert_eq!(result.exclusions.duplicate_events, 1);
+    assert_eq!(result.exclusions.excluded_from_period_statistics, 2);
+    assert_eq!(result.period.minimum_interval_ns, 20_833_333.0);
+    assert_eq!(result.period.maximum_interval_ns, 20_833_333.0);
+    assert!(result.period.rms_error_ns < 1.0);
+}
+
+#[test]
 fn outliers_remain_in_rows_but_are_excluded_from_fit_and_statistics() {
     let result = analyze(&load_fixture("outlier.json"), AnalysisOptions::default()).unwrap();
 
@@ -153,7 +169,7 @@ fn inserted_outlier_does_not_shift_following_valid_clock_tick_indices() {
     assert_eq!(result.exclusions.anomalous_events, 1);
     assert_eq!(result.exclusions.excluded_from_regression, 1);
     assert_eq!(result.exclusions.excluded_from_phase_statistics, 1);
-    assert_eq!(result.exclusions.excluded_from_period_statistics, 1);
+    assert_eq!(result.exclusions.excluded_from_period_statistics, 2);
 }
 
 #[test]
