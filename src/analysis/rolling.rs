@@ -14,7 +14,8 @@ pub struct RollingPoint {
 ///
 /// Each point estimates tempo from the slope across the included (usable)
 /// rows in the window ending at that tick, so inferred missing ticks do not
-/// bias the estimate the way a plain interval mean would.
+/// bias the estimate the way a plain interval mean would. Early points cover
+/// a shorter warm-up span until a full window of ticks is available.
 pub fn rolling_bpm(
     analysis: &AnalysisResult,
     window_ticks: usize,

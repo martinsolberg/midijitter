@@ -74,7 +74,8 @@ enum Command {
     Rolling {
         /// Capture file produced by `record` or `simulate`.
         capture: PathBuf,
-        /// Window length in seconds.
+        /// Window length in seconds, converted to ticks with the fitted
+        /// period, so it is approximate on drifting captures.
         #[arg(long)]
         window: u64,
     },
