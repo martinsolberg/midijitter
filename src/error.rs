@@ -20,6 +20,18 @@ pub enum AppError {
     #[error("PipeWire timestamp arithmetic overflowed")]
     TimestampArithmeticOverflow,
 
+    #[error("PipeWire capture buffer capacity was exhausted")]
+    CaptureOverflow,
+
+    #[error("PipeWire could not negotiate an application/control MIDI stream: {detail}")]
+    PipeWireNegotiationFailed { detail: String },
+
+    #[error("PipeWire source supplied an unsupported MIDI/control buffer format")]
+    PipeWireUnsupportedControlFormat,
+
+    #[error("PipeWire MIDI source disappeared during capture")]
+    PipeWireSourceDisappeared,
+
     #[error("PipeWire daemon unavailable: {detail}")]
     PipeWireUnavailable { detail: String },
 
