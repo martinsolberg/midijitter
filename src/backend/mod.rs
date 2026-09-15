@@ -22,6 +22,16 @@ pub enum CaptureTermination {
     Ticks(u64),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PwApi {
+    /// `pw_filter` capture, mirroring `pw-mididump`: timing comes from the
+    /// `spa_io_position` passed into the process callback.
+    #[default]
+    Filter,
+    /// `pw_stream` capture with `pw_stream_get_time` timing.
+    Stream,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureRequest {
     pub source: MidiSource,
@@ -29,6 +39,11 @@ pub struct CaptureRequest {
     /// Permit the explicitly labeled `CLOCK_MONOTONIC_RAW` userspace fallback
     /// when timestamped ALSA RawMIDI reads are unavailable.
     pub allow_userspace_timestamps: bool,
+    /// PipeWire only: create the capture stream without autoconnecting, so
+    /// the user can link a MIDI source to the exposed input port manually.
+    pub manual_connect: bool,
+    /// PipeWire only: which native API the capture path uses.
+    pub pw_api: PwApi,
 }
 
 impl CaptureRequest {
@@ -41,12 +56,24 @@ impl CaptureRequest {
                 source,
                 termination,
                 allow_userspace_timestamps: false,
+                manual_connect: false,
+                pw_api: PwApi::default(),
             }),
         }
     }
 
     pub fn allow_userspace_timestamps(mut self) -> Self {
         self.allow_userspace_timestamps = true;
+        self
+    }
+
+    pub fn manual_connect(mut self) -> Self {
+        self.manual_connect = true;
+        self
+    }
+
+    pub fn pw_api(mut self, api: PwApi) -> Self {
+        self.pw_api = api;
         self
     }
 }
@@ -90,7 +117,7 @@ pub fn select_source(sources: &[MidiSource], selector: &str) -> Result<MidiSourc
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureRequest, CaptureTermination, MidiSource};
+    use super::{CaptureRequest, CaptureTermination, MidiSource, PwApi};
 
     fn source() -> MidiSource {
         MidiSource {
@@ -110,5 +137,32 @@ mod tests {
         assert!(CaptureRequest::new(source(), CaptureTermination::DurationSeconds(1)).is_ok());
         assert!(CaptureRequest::new(source(), CaptureTermination::Ticks(0)).is_err());
         assert!(CaptureRequest::new(source(), CaptureTermination::DurationSeconds(0)).is_err());
+    }
+
+    #[test]
+    fn capture_request_defaults_to_filter_api() {
+        let request =
+            CaptureRequest::new(source(), CaptureTermination::DurationSeconds(1)).unwrap();
+        assert_eq!(request.pw_api, PwApi::Filter);
+    }
+
+    #[test]
+    fn capture_request_builder_selects_stream_api() {
+        let request = CaptureRequest::new(source(), CaptureTermination::DurationSeconds(1))
+            .unwrap()
+            .pw_api(PwApi::Stream);
+        assert_eq!(request.pw_api, PwApi::Stream);
+    }
+
+    #[test]
+    fn manual_connect_composes_with_either_pipewire_api() {
+        for api in [PwApi::Filter, PwApi::Stream] {
+            let request = CaptureRequest::new(source(), CaptureTermination::DurationSeconds(1))
+                .unwrap()
+                .manual_connect()
+                .pw_api(api);
+            assert!(request.manual_connect);
+            assert_eq!(request.pw_api, api);
+        }
     }
 }

@@ -6,7 +6,7 @@ pub mod timing;
 
 use crate::AppError;
 use crate::CaptureFile;
-use crate::backend::{CaptureBackend, CaptureRequest, MidiSource};
+use crate::backend::{CaptureBackend, CaptureRequest, MidiSource, PwApi};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PipeWireBackend;
@@ -17,6 +17,9 @@ impl CaptureBackend for PipeWireBackend {
     }
 
     fn record(&self, request: CaptureRequest) -> Result<CaptureFile, AppError> {
-        capture::record(request)
+        match request.pw_api {
+            PwApi::Filter => filter_capture::run_filter_capture(&request),
+            PwApi::Stream => capture::record(request),
+        }
     }
 }

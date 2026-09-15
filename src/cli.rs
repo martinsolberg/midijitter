@@ -44,6 +44,15 @@ enum Command {
         /// ALSA RawMIDI reads are unavailable. Only valid with `alsa-raw`.
         #[arg(long)]
         allow_userspace_timestamps: bool,
+        /// PipeWire only: expose a MIDI input sink and wait for a manual
+        /// link from a source port instead of autoconnecting.
+        #[arg(long)]
+        manual_connect: bool,
+        /// PipeWire only: which native API the capture path uses.
+        /// `filter` mirrors pw-mididump (position clock in the process
+        /// callback); `stream` uses pw_stream timing.
+        #[arg(long, value_enum, default_value_t = PwApiArg::Filter)]
+        pw_api: PwApiArg,
     },
     /// Analyze a capture file and report jitter statistics.
     Analyze {
@@ -121,6 +130,12 @@ enum Backend {
     AlsaRaw,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PwApiArg {
+    Filter,
+    Stream,
+}
+
 pub fn run() -> Result<(), AppError> {
     match Cli::parse().command {
         Command::Devices { backend } => run_devices(backend),
@@ -131,6 +146,8 @@ pub fn run() -> Result<(), AppError> {
             ticks,
             output,
             allow_userspace_timestamps,
+            manual_connect,
+            pw_api,
         } => run_record(
             backend,
             source,
@@ -138,6 +155,8 @@ pub fn run() -> Result<(), AppError> {
             ticks,
             output,
             allow_userspace_timestamps,
+            manual_connect,
+            pw_api,
         ),
         Command::Analyze { capture, json, csv } => run_analyze(capture, json, csv),
         Command::Plot {
@@ -193,6 +212,7 @@ fn run_devices(backend: Backend) -> Result<(), AppError> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_record(
     backend: Backend,
     source: String,
@@ -200,6 +220,8 @@ fn run_record(
     ticks: Option<u64>,
     output: PathBuf,
     allow_userspace_timestamps: bool,
+    manual_connect: bool,
+    pw_api: PwApiArg,
 ) -> Result<(), AppError> {
     let termination = match (duration, ticks) {
         (Some(seconds), None) => CaptureTermination::DurationSeconds(seconds),
@@ -215,6 +237,16 @@ fn run_record(
             "--allow-userspace-timestamps is only valid with --backend alsa-raw".to_owned(),
         ));
     }
+    if manual_connect && !matches!(backend, Backend::Pipewire) {
+        return Err(AppError::InvalidCapture(
+            "--manual-connect is only valid with --backend pipewire".to_owned(),
+        ));
+    }
+    if !matches!(pw_api, PwApiArg::Filter) && !matches!(backend, Backend::Pipewire) {
+        return Err(AppError::InvalidCapture(
+            "--pw-api is only valid with --backend pipewire".to_owned(),
+        ));
+    }
 
     let recording: Box<dyn CaptureBackend> = match backend {
         Backend::Pipewire => Box::new(PipeWireBackend),
@@ -228,9 +260,33 @@ fn run_record(
     } else {
         request
     };
+    let request = if manual_connect {
+        request.manual_connect()
+    } else {
+        request
+    };
+    let request = match (backend, pw_api) {
+        (Backend::Pipewire, PwApiArg::Filter) => request.pw_api(crate::backend::PwApi::Filter),
+        (Backend::Pipewire, PwApiArg::Stream) => request.pw_api(crate::backend::PwApi::Stream),
+        _ => request,
+    };
+    let api_label = match pw_api {
+        PwApiArg::Filter => "filter",
+        PwApiArg::Stream => "stream",
+    };
     match backend {
+        Backend::Pipewire if manual_connect => {
+            println!("Backend: PipeWire");
+            println!("API: {api_label}");
+            println!("Mode: manual connect (sink)");
+            println!("Source: {}", selected.display_name);
+            println!();
+            println!("Connect the source to the 'midijitter-capture' input port.");
+            println!("Recording will start automatically once the link is active.");
+        }
         Backend::Pipewire => {
             println!("Backend: PipeWire");
+            println!("API: {api_label}");
             println!("Source: {}", selected.display_name);
         }
         Backend::AlsaRaw => {
