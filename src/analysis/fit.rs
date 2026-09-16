@@ -1,6 +1,6 @@
 use crate::AppError;
 
-use super::indexing::IndexedEvent;
+use super::indexing::{EventDisposition, IndexedEvent};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Fit {
@@ -11,7 +11,7 @@ pub(crate) struct Fit {
 pub(crate) fn least_squares(rows: &[IndexedEvent<'_>]) -> Result<Fit, AppError> {
     let included: Vec<_> = rows
         .iter()
-        .filter(|row| !row.duplicate && !row.anomalous && !row.transient)
+        .filter(|row| row.disposition == EventDisposition::Valid)
         .collect();
     if included.len() < 2 {
         return Err(AppError::InvalidCapture(

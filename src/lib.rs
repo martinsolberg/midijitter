@@ -8,8 +8,9 @@ pub mod plot;
 pub mod simulate;
 
 pub use analysis::{
-    AnalysisOptions, AnalysisResult, AnalysisRow, ExclusionCounts, PeriodStatistics,
-    PhaseStatistics, RollingPoint, analyze, rolling_bpm,
+    AnalysisOptions, AnalysisResult, AnalysisRow, AnomalyDetail, AnomalySummary, EventDisposition,
+    ExclusionCounts, IntervalDisposition, PeriodStatistics, PhaseStatistics, RollingPoint,
+    StartupSummary, analyze, rolling_bpm,
 };
 pub use capture::{
     AlsaTimestamp, CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition, MidiEvent,

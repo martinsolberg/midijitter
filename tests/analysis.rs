@@ -215,6 +215,7 @@ fn settle_window_marks_leading_burst_transient_but_keeps_rows() {
         &capture,
         AnalysisOptions {
             settle_ns: 500_000_000,
+            startup_cadence: Some(8),
             ..Default::default()
         },
     )
@@ -247,7 +248,14 @@ fn settle_zero_disables_transient_marking() {
         time += 20_833_333;
     }
     let capture = capture_with_clock_timestamps(&timestamps);
-    let analysis = analyze(&capture, AnalysisOptions::default()).unwrap();
+    let analysis = analyze(
+        &capture,
+        AnalysisOptions {
+            startup_cadence: Some(0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(
         analysis.rows.iter().all(|row| !row.transient),
         "default options must mark nothing transient"
@@ -268,6 +276,7 @@ fn transient_events_are_counted_as_excluded() {
         &capture,
         AnalysisOptions {
             settle_ns: 1_000_000_000,
+            startup_cadence: Some(8),
             ..Default::default()
         },
     )

@@ -6,7 +6,11 @@ mod statistics;
 
 use crate::{AppError, CaptureFile, MidiEvent};
 
-pub use jitter::{AnalysisResult, AnalysisRow, ExclusionCounts, PeriodStatistics, PhaseStatistics};
+pub use indexing::{EventDisposition, IntervalDisposition};
+pub use jitter::{
+    AnalysisResult, AnalysisRow, AnomalyDetail, AnomalySummary, ExclusionCounts, PeriodStatistics,
+    PhaseStatistics, StartupSummary,
+};
 pub use rolling::{RollingPoint, rolling_bpm};
 
 #[derive(Debug, Clone, Copy)]
@@ -18,6 +22,9 @@ pub struct AnalysisOptions {
     /// Events before this offset from capture start are startup-transient:
     /// kept in rows, excluded from fit and statistics. Zero disables.
     pub settle_ns: i128,
+    /// Startup cadence confirmation count. None selects the backend default;
+    /// Some(0) disables startup filtering.
+    pub startup_cadence: Option<usize>,
 }
 
 impl Default for AnalysisOptions {
@@ -26,6 +33,7 @@ impl Default for AnalysisOptions {
             max_passes: 10,
             integer_multiple_tolerance: 0.2,
             settle_ns: 0,
+            startup_cadence: None,
         }
     }
 }
@@ -50,36 +58,63 @@ pub fn analyze(
     }
 
     let initial_period = indexing::initial_period(&clock_events)?;
+    let startup_cadence = options.startup_cadence.unwrap_or_else(|| {
+        (capture.backend == "pipewire").then_some(8).unwrap_or(0)
+    });
+    let anchor = indexing::find_live_anchor(
+        &clock_events,
+        initial_period,
+        options.integer_multiple_tolerance,
+        startup_cadence,
+        options.settle_ns,
+    )
+    .ok_or_else(|| {
+        AppError::InvalidCapture(
+            "clock analysis requires a complete startup cadence confirmation".to_owned(),
+        )
+    })?;
     let pass_limit = options.max_passes.min(10);
     let mut period = initial_period;
     let mut previous_signature = None;
 
     for _ in 0..pass_limit {
-        let mut indexed =
-            indexing::classify(&clock_events, period, options.integer_multiple_tolerance);
-        if options.settle_ns > 0 {
-            let start_ns = clock_events
-                .first()
-                .map(|event| event.timestamp_ns)
-                .unwrap_or(0);
-            for row in &mut indexed {
-                row.transient = row.event.timestamp_ns - start_ns < options.settle_ns;
-            }
-        }
+        let mut indexed = indexing::classify(
+            &clock_events[anchor..],
+            period,
+            options.integer_multiple_tolerance,
+        );
+        let mut transient = clock_events[..anchor]
+            .iter()
+            .map(|event| indexing::IndexedEvent {
+                event,
+                tick_index: 0,
+                step: 0,
+                disposition: indexing::EventDisposition::StartupTransient,
+                interval_disposition: indexing::IntervalDisposition::Normal,
+                missing_before: 0,
+            })
+            .collect::<Vec<_>>();
+        transient.append(&mut indexed);
+        let indexed = transient;
         let signature = indexing::signature(&indexed);
         let fit = fit::least_squares(&indexed)?;
 
         if previous_signature.as_ref() == Some(&signature) {
             if !indexed
                 .iter()
-                .skip(1)
-                .any(|row| !row.duplicate && !row.anomalous && !row.transient && row.step == 1)
+                .any(|row| row.disposition == indexing::EventDisposition::Valid && row.step == 1)
             {
                 return Err(AppError::InvalidCapture(
                     "clock analysis requires a normal one-tick interval".to_owned(),
                 ));
             }
-            return jitter::build_result(&indexed, fit, capture.events.len());
+            return jitter::build_result(
+                &indexed,
+                fit,
+                capture.events.len(),
+                startup_cadence,
+                initial_period,
+            );
         }
 
         previous_signature = Some(signature);

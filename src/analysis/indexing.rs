@@ -1,13 +1,29 @@
 use crate::{AppError, CapturedEvent};
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum EventDisposition {
+    Valid,
+    StartupTransient,
+    Duplicate,
+    Anomalous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum IntervalDisposition {
+    Normal,
+    Missing { count: u32 },
+    Anomalous,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct IndexedEvent<'a> {
     pub event: &'a CapturedEvent,
     pub tick_index: i64,
     pub step: i64,
-    pub duplicate: bool,
-    pub anomalous: bool,
-    pub transient: bool,
+    pub disposition: EventDisposition,
+    pub interval_disposition: IntervalDisposition,
+    pub missing_before: u32,
 }
 
 pub(crate) fn initial_period(events: &[&CapturedEvent]) -> Result<f64, AppError> {
@@ -38,9 +54,9 @@ pub(crate) fn classify<'a>(
         event: events[0],
         tick_index: 0,
         step: 1,
-        duplicate: false,
-        anomalous: false,
-        transient: false,
+        disposition: EventDisposition::Valid,
+        interval_disposition: IntervalDisposition::Normal,
+        missing_before: 0,
     });
     let mut previous_event = events[0];
     let mut last_included_event = events[0];
@@ -65,9 +81,29 @@ pub(crate) fn classify<'a>(
             event,
             tick_index,
             step,
-            duplicate,
-            anomalous: !duplicate && !included,
-            transient: false,
+            disposition: if duplicate {
+                EventDisposition::Duplicate
+            } else if included {
+                EventDisposition::Valid
+            } else {
+                EventDisposition::Anomalous
+            },
+            interval_disposition: if duplicate {
+                IntervalDisposition::Anomalous
+            } else if is_missing_multiple {
+                IntervalDisposition::Missing {
+                    count: (rounded - 1) as u32,
+                }
+            } else if is_normal {
+                IntervalDisposition::Normal
+            } else {
+                IntervalDisposition::Anomalous
+            },
+            missing_before: if is_missing_multiple {
+                (rounded - 1) as u32
+            } else {
+                0
+            },
         });
         if included {
             last_included_event = event;
@@ -78,10 +114,48 @@ pub(crate) fn classify<'a>(
     rows
 }
 
-pub(crate) fn signature(rows: &[IndexedEvent<'_>]) -> Vec<(i64, bool, bool, bool)> {
+pub(crate) fn signature(
+    rows: &[IndexedEvent<'_>],
+) -> Vec<(i64, EventDisposition, IntervalDisposition, u32)> {
     rows.iter()
-        .map(|row| (row.step, row.duplicate, row.anomalous, row.transient))
+        .map(|row| {
+            (
+                row.step,
+                row.disposition,
+                row.interval_disposition,
+                row.missing_before,
+            )
+        })
         .collect()
+}
+
+pub(crate) fn find_live_anchor(
+    events: &[&CapturedEvent],
+    period_ns: f64,
+    tolerance: f64,
+    startup_cadence: usize,
+    settle_ns: i128,
+) -> Option<usize> {
+    if startup_cadence == 0 {
+        return Some(0);
+    }
+    let start_ns = events.first()?.timestamp_ns;
+    let boundary = start_ns.saturating_add(settle_ns.max(0));
+    let tolerance = tolerance.max(0.0);
+    events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.timestamp_ns >= boundary)
+        .find_map(|(index, _)| {
+            let end = index.checked_add(startup_cadence)?;
+            let candidate = events.get(index..=end)?;
+            let plausible = candidate.windows(2).all(|pair| {
+                let interval = (pair[1].timestamp_ns - pair[0].timestamp_ns) as f64;
+                interval > 0.0
+                    && ((interval - period_ns) / period_ns).abs() <= tolerance
+            });
+            plausible.then_some(index)
+        })
 }
 
 fn median(sorted: &[f64]) -> f64 {
