@@ -100,6 +100,12 @@ events are preserved in the capture and excluded from clean statistics
 explicitly. Captures with graph-rate or quantum transitions are preserved but
 rejected from analysis (v0.1).
 
+JSON and CSV retain every analyzed clock row. Each row records its event
+disposition (`Valid`, `StartupTransient`, `Duplicate`, or `Anomalous`) and its
+independent interval disposition (`Normal`, `Missing`, or `Anomalous`), plus
+`missing_before`. A missing clock is an interval property; the first event
+after a gap may still be a valid phase observation.
+
 ### Plot
 
 ```bash
@@ -139,10 +145,11 @@ midijitter rolling capture.json --window 5    # rolling BPM over a 5 s window
 ## Startup detection
 
 PipeWire/ALSA-seq analysis waits for eight consecutive plausible one-tick
-intervals before selecting the live anchor. The first event of that confirmed
-run receives tick zero; earlier events remain in the capture as startup
-transients and are excluded from fit, statistics, rolling output, and plots.
-This prevents the link-time stale backlog from becoming a phase extreme.
+intervals by default before selecting the live anchor. The first event of that
+confirmed run receives tick zero; earlier events remain in the capture as
+startup transients and are excluded from fit, statistics, rolling output, and
+plots. This prevents the link-time stale backlog from becoming a phase
+extreme. Other backends do not enable cadence filtering unless requested.
 
 ```bash
 midijitter analyze capture.json
@@ -166,6 +173,10 @@ midijitter analyze capture.json --settle 1s
 terms such as `Zero/duplicate backlog`; it does not claim ALSA-seq bridge
 provenance unless the capture provides that evidence.
 
+The settle boundary is strict: a candidate cadence run must begin at or after
+`capture_start + settle`. Once the run is confirmed, all events before its
+first event are startup transients.
+
 ## Interpretation notes
 
 - Constant latency is removed by the fitted clock intercept; variable latency
@@ -173,9 +184,14 @@ provenance unless the capture provides that evidence.
 - A stable source at 119.98 BPM reports near-zero jitter — the measured tempo
   is fitted, never assumed.
 - Missing/duplicate clocks and USB batching are part of the system under test
-  and are preserved, not smoothed away.
+  and are preserved, not smoothed away. Startup transients are excluded from
+  the benchmark population; post-startup anomalies remain visible and receive
+  a separate count and worst-residual summary.
+- Clean phase metrics use only `Valid` events. Clean period metrics require
+  both adjacent events to be `Valid`, a one-tick step, and a `Normal` interval,
+  so an anomaly cannot contaminate either neighboring period measurement.
 - Prefer RMS/P99 over peak-to-peak as the stability headline: a single
-  exceptional excursion (e.g. the startup flush above) dominates
+  exceptional excursion (for example, an unfiltered startup flush) dominates
   peak-to-peak while telling you nothing about the clock population.
 
 ## Development
