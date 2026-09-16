@@ -138,9 +138,11 @@ midijitter analyze capture.json --csv out.csv
 
 The report includes measured BPM, fitted clock period, phase jitter (RMS, σ,
 mean/median absolute, P95/P99, min/max, peak-to-peak), period jitter, and
-counts of missing/duplicate/anomalous clocks. Anomalous events are preserved in
-the capture and excluded from statistics explicitly. Captures with graph-rate
-or quantum transitions are preserved but rejected from analysis (v0.1).
+counts of missing/duplicate/anomalous clocks. Startup classification and
+anomaly details are also included in the text report, JSON, and CSV. Anomalous
+events are preserved in the capture and excluded from clean statistics
+explicitly. Captures with graph-rate or quantum transitions are preserved but
+rejected from analysis (v0.1).
 
 ### Plot
 
@@ -178,21 +180,35 @@ periodic jitter, missing/duplicate rates, linear drift (`10ppm/s`), and a
 midijitter rolling capture.json --window 5    # rolling BPM over a 5 s window
 ```
 
-## Startup transient
+## Startup detection
 
-Linking a new reader to a PipeWire MIDI port typically flushes a backlog of
-stale clock events (observed: ~65 events sharing one graph position at
-capture start). These are flagged as duplicates and excluded from the fit,
-but the first event anchors tick zero, so it can still dominate `Latest` and
-peak-to-peak. To mark the warm-up window as startup-transient — kept in the
-file, excluded from fit and statistics with explicit counts:
+PipeWire/ALSA-seq analysis waits for eight consecutive plausible one-tick
+intervals before selecting the live anchor. The first event of that confirmed
+run receives tick zero; earlier events remain in the capture as startup
+transients and are excluded from fit, statistics, rolling output, and plots.
+This prevents the link-time stale backlog from becoming a phase extreme.
+
+```bash
+midijitter analyze capture.json
+```
+
+Tune or disable cadence detection when diagnosing a capture:
+
+```bash
+midijitter analyze capture.json --startup-cadence 16
+midijitter analyze capture.json --startup-cadence 0
+```
+
+Use `--settle` as an additional lower bound when the link needs a known warm-up
+period. It does not replace cadence confirmation:
 
 ```bash
 midijitter analyze capture.json --settle 1s
 ```
 
-`--settle` accepts durations like `500ms` or `1s`; `0` (default) disables
-marking and reproduces the unflagged report exactly.
+`--settle` accepts durations like `500ms` or `1s`. The report uses neutral
+terms such as `Zero/duplicate backlog`; it does not claim ALSA-seq bridge
+provenance unless the capture provides that evidence.
 
 ## Interpretation notes
 

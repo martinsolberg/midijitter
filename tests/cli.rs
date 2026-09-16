@@ -155,6 +155,38 @@ fn analyze_json_output_is_machine_readable() {
 }
 
 #[test]
+fn analyze_startup_cadence_defaults_for_pipewire_and_can_be_disabled() {
+    let capture = temp_path("perfect-120-startup.json");
+    let pipewire_capture = fixture_capture("perfect-120")
+        .replace("\"backend\":\"fixture\"", "\"backend\":\"pipewire\"");
+    std::fs::write(&capture, pipewire_capture).unwrap();
+
+    let default_output = binary()
+        .args(["analyze", &capture.to_string_lossy(), "--json"])
+        .output()
+        .expect("midijitter binary should run");
+    assert!(default_output.status.success());
+    let default_report: serde_json::Value =
+        serde_json::from_slice(&default_output.stdout).expect("default report should be JSON");
+    assert_eq!(default_report["startup"]["cadence_confirmation"], 8);
+
+    let diagnostic_output = binary()
+        .args([
+            "analyze",
+            &capture.to_string_lossy(),
+            "--startup-cadence",
+            "0",
+            "--json",
+        ])
+        .output()
+        .expect("midijitter binary should run");
+    assert!(diagnostic_output.status.success());
+    let diagnostic_report: serde_json::Value = serde_json::from_slice(&diagnostic_output.stdout)
+        .expect("diagnostic report should be JSON");
+    assert_eq!(diagnostic_report["startup"]["cadence_confirmation"], 0);
+}
+
+#[test]
 fn analyze_csv_output_uses_the_specified_columns() {
     let capture = temp_path("perfect-120.json");
     std::fs::write(&capture, fixture_capture("perfect-120")).unwrap();

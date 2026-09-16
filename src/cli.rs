@@ -69,6 +69,11 @@ enum Command {
         /// statistics). Accepts durations like `500ms`, `1s`; `0` disables.
         #[arg(long, default_value = "0")]
         settle: String,
+        /// Require this many consecutive plausible one-tick intervals before
+        /// selecting the live anchor. Omit for the backend default; use 0 to
+        /// disable startup cadence filtering.
+        #[arg(long)]
+        startup_cadence: Option<usize>,
     },
     /// Render diagnostic plots from a capture file.
     Plot {
@@ -168,7 +173,8 @@ pub fn run() -> Result<(), AppError> {
             json,
             csv,
             settle,
-        } => run_analyze(capture, json, csv, settle),
+            startup_cadence,
+        } => run_analyze(capture, json, csv, settle, startup_cadence),
         Command::Plot {
             capture,
             output_dir,
@@ -351,12 +357,14 @@ fn run_analyze(
     json: bool,
     csv: Option<PathBuf>,
     settle: String,
+    startup_cadence: Option<usize>,
 ) -> Result<(), AppError> {
     let capture_file = CaptureFile::read_from_file(&capture)?;
     // The duration parser accepts "0" and rejects negatives itself.
     let settle_ns = crate::simulate::parse_duration_ns(&settle)? as i128;
     let options = AnalysisOptions {
         settle_ns,
+        startup_cadence,
         ..AnalysisOptions::default()
     };
     if !capture_file.transitions.is_empty() {
