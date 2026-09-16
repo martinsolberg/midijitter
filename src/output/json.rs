@@ -36,7 +36,10 @@ pub fn format_json_report(
         "intercept_ns": analysis.intercept_ns,
         "phase": analysis.phase,
         "period": analysis.period,
+        "startup": analysis.startup,
+        "anomalies": analysis.anomalies,
         "exclusions": analysis.exclusions,
+        "rows": analysis.rows,
         "warnings": warnings(capture, analysis.rows.len()),
     });
     Ok(serde_json::to_string_pretty(&report)?)

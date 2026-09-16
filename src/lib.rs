@@ -10,7 +10,7 @@ pub mod simulate;
 pub use analysis::{
     AnalysisOptions, AnalysisResult, AnalysisRow, AnomalyDetail, AnomalySummary, EventDisposition,
     ExclusionCounts, IntervalDisposition, PeriodStatistics, PhaseStatistics, RollingPoint,
-    StartupSummary, analyze, rolling_bpm,
+    StartupSummary, analyze, is_clean_period, is_clean_phase, rolling_bpm,
 };
 pub use capture::{
     AlsaTimestamp, CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition, MidiEvent,

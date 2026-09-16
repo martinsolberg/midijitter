@@ -176,7 +176,8 @@ fn analyze_csv_output_uses_the_specified_columns() {
     assert_eq!(
         lines.next().expect("CSV should have a header"),
         "event,tick_index,time_s,interval_ms,ideal_time_s,phase_error_ms,\
-         period_error_ms,backend,cycle_position,event_offset,event_position"
+         period_error_ms,backend,cycle_position,event_offset,event_position,\
+         disposition,interval_disposition,missing_before"
     );
     let rows: Vec<_> = lines.collect();
     assert_eq!(rows.len(), 12);
@@ -190,6 +191,9 @@ fn analyze_csv_output_uses_the_specified_columns() {
     let second: Vec<_> = rows[1].split(',').collect();
     assert!(!second[3].is_empty(), "interval_ms should be present");
     assert!(!second[6].is_empty(), "period_error_ms should be present");
+    assert_eq!(first[11], "Valid");
+    assert_eq!(first[12], "Normal");
+    assert_eq!(first[13], "0");
 }
 
 #[test]

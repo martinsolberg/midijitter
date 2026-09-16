@@ -94,6 +94,36 @@ pub fn format_report(capture: &CaptureFile, analysis: &AnalysisResult) -> String
         "  Start / Continue / Stop  {starts} / {continues} / {stops}\n"
     ));
 
+    report.push_str("\nStartup\n");
+    report.push_str(&format!(
+        "  Transient events        {}\n",
+        analysis.startup.transient_events
+    ));
+    report.push_str(&format!(
+        "  Zero/duplicate backlog  {}\n",
+        analysis.startup.zero_or_negative_backlog
+    ));
+    report.push_str(&format!(
+        "  Live anchor             {}\n",
+        match (
+            analysis.startup.live_anchor_sequence,
+            analysis.startup.live_anchor_timestamp_ns,
+        ) {
+            (Some(sequence), Some(timestamp_ns)) => {
+                format!("seq {sequence} / {:.3} s", timestamp_ns as f64 / 1e9)
+            }
+            _ => "n/a".to_owned(),
+        }
+    ));
+    report.push_str(&format!(
+        "  Cadence confirmation    {} intervals\n",
+        analysis.startup.cadence_confirmation
+    ));
+    report.push_str(&format!(
+        "  Startup period estimate {}\n",
+        ms(analysis.startup.period_ns)
+    ));
+
     report.push_str("\nClock\n");
     report.push_str(&format!("  PPQN                   {}\n", capture.ppqn));
     report.push_str(&format!(
@@ -179,6 +209,43 @@ pub fn format_report(capture: &CaptureFile, analysis: &AnalysisResult) -> String
     report.push_str(&format!(
         "  Maximum interval       {}\n",
         maybe_ms(period.maximum_interval_ns, has_period)
+    ));
+
+    report.push_str("\nSteady-state clock\n");
+    report.push_str(&format!(
+        "  Valid clock events     {}\n",
+        analysis
+            .rows
+            .iter()
+            .filter(|row| row.disposition == crate::EventDisposition::Valid)
+            .count()
+    ));
+    report.push_str(&format!(
+        "  Grid anomalies         {}\n",
+        analysis.anomalies.count
+    ));
+    report.push_str("\nAnomalies\n");
+    report.push_str(&format!(
+        "  Count                  {}\n",
+        analysis.anomalies.count
+    ));
+    report.push_str(&format!(
+        "  Worst phase residual   {}\n",
+        analysis
+            .anomalies
+            .worst_phase
+            .as_ref()
+            .map(|detail| ms(detail.value_ns))
+            .unwrap_or_else(|| "n/a".to_owned())
+    ));
+    report.push_str(&format!(
+        "  Worst interval         {}\n",
+        analysis
+            .anomalies
+            .worst_interval
+            .as_ref()
+            .map(|detail| ms(detail.value_ns))
+            .unwrap_or_else(|| "n/a".to_owned())
     ));
 
     report

@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::{AnalysisResult, AppError, CaptureFile, CapturedEvent, TimestampMetadata};
+use crate::{
+    AnalysisResult, AppError, CaptureFile, CapturedEvent, EventDisposition, IntervalDisposition,
+    TimestampMetadata, is_clean_period,
+};
 
-pub const CSV_HEADERS: [&str; 11] = [
+pub const CSV_HEADERS: [&str; 14] = [
     "event",
     "tick_index",
     "time_s",
@@ -15,6 +18,9 @@ pub const CSV_HEADERS: [&str; 11] = [
     "cycle_position",
     "event_offset",
     "event_position",
+    "disposition",
+    "interval_disposition",
+    "missing_before",
 ];
 
 fn seconds(timestamp_ns: i128) -> String {
@@ -43,7 +49,7 @@ pub fn write_csv_report(
     let mut writer = csv::Writer::from_path(path)?;
     writer.write_record(CSV_HEADERS)?;
 
-    let mut previous: Option<(i128, bool, i64)> = None;
+    let mut previous: Option<&crate::AnalysisRow> = None;
     for row in &analysis.rows {
         let event = events.get(&row.sequence);
         // NOTE: a future timestamp variant must extend this match with blank
@@ -67,18 +73,12 @@ pub fn write_csv_report(
         };
 
         let interval_ms = previous
-            .map(|(previous_ns, _, _)| milliseconds((row.timestamp_ns - previous_ns) as f64))
+            .map(|previous| milliseconds((row.timestamp_ns - previous.timestamp_ns) as f64))
             .unwrap_or_default();
         let period_error_ms = match previous {
-            Some((previous_ns, previous_valid, previous_tick))
-                if previous_valid
-                    && !row.duplicate
-                    && !row.anomalous
-                    && !row.transient
-                    && row.tick_index == previous_tick + 1 =>
-            {
-                milliseconds((row.timestamp_ns - previous_ns) as f64 - analysis.fitted_period_ns)
-            }
+            Some(previous) if is_clean_period(previous, row) => milliseconds(
+                (row.timestamp_ns - previous.timestamp_ns) as f64 - analysis.fitted_period_ns,
+            ),
             _ => String::new(),
         };
         let ideal_time_s = seconds(
@@ -97,13 +97,12 @@ pub fn write_csv_report(
             &cycle_position,
             &event_offset,
             &event_position,
+            &event_disposition(row.disposition),
+            &interval_disposition(row.interval_disposition),
+            &row.missing_before.to_string(),
         ])?;
 
-        previous = Some((
-            row.timestamp_ns,
-            !row.duplicate && !row.anomalous && !row.transient,
-            row.tick_index,
-        ));
+        previous = Some(row);
     }
 
     writer.flush().map_err(|error| AppError::FileWrite {
@@ -111,4 +110,16 @@ pub fn write_csv_report(
         message: error.to_string(),
     })?;
     Ok(())
+}
+
+fn event_disposition(disposition: EventDisposition) -> String {
+    format!("{disposition:?}")
+}
+
+fn interval_disposition(disposition: IntervalDisposition) -> String {
+    match disposition {
+        IntervalDisposition::Normal => "Normal".to_owned(),
+        IntervalDisposition::Missing { count } => format!("Missing({count})"),
+        IntervalDisposition::Anomalous => "Anomalous".to_owned(),
+    }
 }
