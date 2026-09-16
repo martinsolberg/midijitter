@@ -71,9 +71,12 @@ pub(crate) fn classify<'a>(
         let is_missing_multiple = rounded >= 2 && (ratio - rounded as f64).abs() <= tolerance;
         let is_normal = rounded == 1 && (ratio - 1.0).abs() <= tolerance;
         let included = !duplicate && (is_missing_multiple || is_normal);
+        let anomalous = !duplicate && !included;
         let step = if included { rounded } else { 0 };
         let tick_index = if included {
             last_included_tick_index + step
+        } else if anomalous {
+            last_included_tick_index + 1
         } else {
             last_included_tick_index
         };
