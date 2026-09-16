@@ -2,6 +2,7 @@ use std::path::Path;
 
 use plotters::prelude::*;
 
+use crate::analysis::is_clean_phase;
 use crate::{AnalysisResult, AppError, CaptureFile};
 
 use super::{drawing_root, plot_error, series_range};
@@ -15,7 +16,7 @@ pub fn render_phase_plot(
     let points: Vec<(f64, f64)> = analysis
         .rows
         .iter()
-        .filter(|row| !row.duplicate && !row.anomalous)
+        .filter(|row| is_clean_phase(row))
         .map(|row| {
             (
                 row.timestamp_ns as f64 / 1_000_000_000.0,

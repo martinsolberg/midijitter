@@ -2,6 +2,7 @@ use std::path::Path;
 
 use plotters::prelude::*;
 
+use crate::analysis::is_clean_period;
 use crate::{AnalysisResult, AppError, CaptureFile};
 
 use super::{drawing_root, plot_error, series_range};
@@ -14,15 +15,10 @@ pub fn render_period_plot(
     analysis: &AnalysisResult,
     path: &Path,
 ) -> Result<(), AppError> {
-    let usable: Vec<_> = analysis
-        .rows
-        .iter()
-        .filter(|row| !row.duplicate && !row.anomalous)
-        .collect();
     let mut points = Vec::new();
-    for pair in usable.windows(2) {
-        let (previous, current) = (pair[0], pair[1]);
-        if current.tick_index != previous.tick_index + 1 {
+    for pair in analysis.rows.windows(2) {
+        let (previous, current) = (&pair[0], &pair[1]);
+        if !is_clean_period(previous, current) {
             continue;
         }
         points.push((

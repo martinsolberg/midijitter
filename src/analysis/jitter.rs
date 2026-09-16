@@ -172,7 +172,11 @@ pub(crate) fn build_result(
         .filter(|row| row.disposition == EventDisposition::Anomalous);
     let worst_phase = anomaly_rows
         .clone()
-        .max_by(|left, right| left.phase_error_ns.abs().total_cmp(&right.phase_error_ns.abs()))
+        .max_by(|left, right| {
+            left.phase_error_ns
+                .abs()
+                .total_cmp(&right.phase_error_ns.abs())
+        })
         .map(|row| AnomalyDetail {
             sequence: row.sequence,
             timestamp_ns: row.timestamp_ns,
@@ -221,10 +225,7 @@ pub(crate) fn build_result(
             duplicate_events,
             anomalous_events,
             transient_events,
-            inferred_missing_ticks: rows
-                .iter()
-                .map(|row| row.missing_before as usize)
-                .sum(),
+            inferred_missing_ticks: rows.iter().map(|row| row.missing_before as usize).sum(),
             excluded_from_regression: duplicate_events + anomalous_events + transient_events,
             excluded_from_phase_statistics: duplicate_events + anomalous_events + transient_events,
             excluded_from_period_statistics: excluded_period,

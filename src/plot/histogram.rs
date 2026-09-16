@@ -2,6 +2,7 @@ use std::path::Path;
 
 use plotters::prelude::*;
 
+use crate::analysis::is_clean_phase;
 use crate::{AnalysisResult, AppError, CaptureFile};
 
 use super::{drawing_root, padded_range, plot_error};
@@ -15,7 +16,7 @@ pub fn render_phase_histogram(
     let mut errors: Vec<f64> = analysis
         .rows
         .iter()
-        .filter(|row| !row.duplicate && !row.anomalous)
+        .filter(|row| is_clean_phase(row))
         .map(|row| row.phase_error_ns / 1_000_000.0)
         .collect();
     if errors.is_empty() {

@@ -151,8 +151,7 @@ pub(crate) fn find_live_anchor(
             let candidate = events.get(index..=end)?;
             let plausible = candidate.windows(2).all(|pair| {
                 let interval = (pair[1].timestamp_ns - pair[0].timestamp_ns) as f64;
-                interval > 0.0
-                    && ((interval - period_ns) / period_ns).abs() <= tolerance
+                interval > 0.0 && ((interval - period_ns) / period_ns).abs() <= tolerance
             });
             plausible.then_some(index)
         })

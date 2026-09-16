@@ -9,7 +9,7 @@ use crate::{AppError, CaptureFile, MidiEvent};
 pub use indexing::{EventDisposition, IntervalDisposition};
 pub use jitter::{
     AnalysisResult, AnalysisRow, AnomalyDetail, AnomalySummary, ExclusionCounts, PeriodStatistics,
-    PhaseStatistics, StartupSummary,
+    PhaseStatistics, StartupSummary, is_clean_period, is_clean_phase,
 };
 pub use rolling::{RollingPoint, rolling_bpm};
 
@@ -58,9 +58,9 @@ pub fn analyze(
     }
 
     let initial_period = indexing::initial_period(&clock_events)?;
-    let startup_cadence = options.startup_cadence.unwrap_or_else(|| {
-        (capture.backend == "pipewire").then_some(8).unwrap_or(0)
-    });
+    let startup_cadence = options
+        .startup_cadence
+        .unwrap_or_else(|| if capture.backend == "pipewire" { 8 } else { 0 });
     let anchor = indexing::find_live_anchor(
         &clock_events,
         initial_period,

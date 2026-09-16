@@ -1,6 +1,6 @@
 use crate::{AnalysisResult, AppError};
 
-use super::jitter::AnalysisRow;
+use super::jitter::{AnalysisRow, is_clean_phase};
 
 /// One rolling-tempo sample: the mean tempo over the window ending at a tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,7 +28,7 @@ pub fn rolling_bpm(
     let usable: Vec<&AnalysisRow> = analysis
         .rows
         .iter()
-        .filter(|row| !row.duplicate && !row.anomalous && !row.transient)
+        .filter(|row| is_clean_phase(row))
         .collect();
     if usable.len() < window_ticks + 1 {
         return Err(AppError::InvalidCapture(
