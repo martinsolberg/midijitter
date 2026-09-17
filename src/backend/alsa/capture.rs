@@ -235,16 +235,31 @@ fn configure_clock(
     device: &str,
     allow_userspace: bool,
 ) -> Result<AlsaClock, AppError> {
-    let mut params =
-        alsa::rawmidi::Params::new().map_err(|error| map_open_error(&error, device))?;
+    let mut params = handle
+        .params_current()
+        .map_err(|error| map_open_error(&error, device))?;
     let configured = params
         .set_read_mode(handle, ReadMode::Timestamp)
         .and_then(|()| params.set_clock_type(handle, Clock::MonotonicRaw))
-        .and_then(|()| handle.params(&params));
+        .and_then(|()| handle.params(&params))
+        .and_then(|()| handle.params_current())
+        .and_then(|params| {
+            let read_mode = params.get_read_mode()?;
+            let clock = params.get_clock_type()?;
+            if has_kernel_timestamp_configuration(read_mode, clock) {
+                Ok(())
+            } else {
+                Err(alsa::Error::new("snd_rawmidi_params", -libc::EINVAL))
+            }
+        });
     match configured {
         Ok(()) => Ok(AlsaClock::MonotonicRaw),
         Err(error) => resolve_timestamp_setup(&error, device, allow_userspace),
     }
+}
+
+fn has_kernel_timestamp_configuration(read_mode: ReadMode, clock: Clock) -> bool {
+    read_mode == ReadMode::Timestamp && clock == Clock::MonotonicRaw
 }
 
 /// Decides between the explicit userspace fallback and a hard error.
@@ -323,10 +338,29 @@ mod tests {
     use crate::capture::MidiParser;
     use crate::{AppError, CapturedEvent, TimestampMetadata};
 
-    use super::{AlsaClock, record_alsa_bytes, resolve_timestamp_setup};
+    use super::{
+        AlsaClock, Clock, ReadMode, has_kernel_timestamp_configuration, record_alsa_bytes,
+        resolve_timestamp_setup,
+    };
 
     fn alsa_error(func: &'static str, errno: libc::c_int) -> alsa::Error {
         alsa::Error::new(func, -errno)
+    }
+
+    #[test]
+    fn kernel_timestamp_configuration_requires_timestamp_mode_and_raw_clock() {
+        assert!(has_kernel_timestamp_configuration(
+            ReadMode::Timestamp,
+            Clock::MonotonicRaw,
+        ));
+        assert!(!has_kernel_timestamp_configuration(
+            ReadMode::Standard,
+            Clock::MonotonicRaw,
+        ));
+        assert!(!has_kernel_timestamp_configuration(
+            ReadMode::Timestamp,
+            Clock::Monotonic,
+        ));
     }
 
     #[test]
