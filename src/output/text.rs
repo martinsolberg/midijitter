@@ -1,4 +1,4 @@
-use crate::{AnalysisResult, CaptureFile};
+use crate::{AnalysisResult, CaptureFile, PairedAnalysisResult, PairedCapture};
 
 use super::{duration_s, timing_summary, transport_counts, warnings};
 
@@ -248,5 +248,66 @@ pub fn format_report(capture: &CaptureFile, analysis: &AnalysisResult) -> String
             .unwrap_or_else(|| "n/a".to_owned())
     ));
 
+    report
+}
+
+pub fn format_paired_report(capture: &PairedCapture, analysis: &PairedAnalysisResult) -> String {
+    let mut report = String::from("Paired MIDI Clock Analysis\n===========================\n");
+    report.push_str(&format!(
+        "\nReference               {}\n",
+        capture.reference.display_name
+    ));
+    report.push_str(&format!(
+        "Returned                {}\n",
+        capture.returned.display_name
+    ));
+    report.push_str(&format!(
+        "Alignment               {}{}\n",
+        if analysis.pairing.anchored {
+            "anchored"
+        } else {
+            "MAD lag"
+        },
+        format_args!(" ({} ticks)", analysis.pairing.lag_ticks)
+    ));
+    report.push_str(&format!(
+        "Pairs                   {}\n",
+        analysis.pairing.rows.len()
+    ));
+    let counts = &analysis.pairing.status_counts;
+    report.push_str("\nPairing status\n");
+    report.push_str(&format!("  Valid                 {}\n", counts.valid));
+    report.push_str(&format!(
+        "  Missing reference     {}\n",
+        counts.missing_reference
+    ));
+    report.push_str(&format!(
+        "  Missing returned      {}\n",
+        counts.missing_returned
+    ));
+    report.push_str(&format!(
+        "  Reference anomalous   {}\n",
+        counts.reference_anomalous
+    ));
+    report.push_str(&format!(
+        "  Returned anomalous    {}\n",
+        counts.returned_anomalous
+    ));
+    report.push_str(&format!(
+        "  Both anomalous        {}\n",
+        counts.both_anomalous
+    ));
+    report.push_str(&format!(
+        "\nResynchronization      {}\nCandidate lags         {:?}\n",
+        if analysis.pairing.anchored {
+            "anchored"
+        } else {
+            "MAD lag"
+        },
+        analysis.pairing.candidate_lags
+    ));
+    let latency = &analysis.latency;
+    report.push_str("\nPath latency\n");
+    report.push_str(&format!("  Count                 {}\n  Mean                  {} ns\n  Median                {} ns\n  P95                   {} ns\n  Minimum              {} ns\n  Maximum              {} ns\n", latency.count, latency.mean_ns, latency.median_ns, latency.p95_ns, latency.minimum_ns, latency.maximum_ns));
     report
 }

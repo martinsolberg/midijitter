@@ -34,6 +34,44 @@ pub struct CaptureRequest {
     pub manual_connect: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairedCaptureRequest {
+    pub reference: MidiSource,
+    pub returned: MidiSource,
+    pub termination: CaptureTermination,
+    pub manual_connect: bool,
+}
+
+impl PairedCaptureRequest {
+    pub fn new(
+        reference: MidiSource,
+        returned: MidiSource,
+        termination: CaptureTermination,
+    ) -> Result<Self, AppError> {
+        if reference.stable_identity() == returned.stable_identity() {
+            return Err(AppError::InvalidCapture(
+                "paired source identities must be distinct".to_owned(),
+            ));
+        }
+        match termination {
+            CaptureTermination::DurationSeconds(0) | CaptureTermination::Ticks(0) => Err(
+                AppError::InvalidCapture("capture termination must be positive".to_owned()),
+            ),
+            _ => Ok(Self {
+                reference,
+                returned,
+                termination,
+                manual_connect: false,
+            }),
+        }
+    }
+
+    pub fn manual_connect(mut self) -> Self {
+        self.manual_connect = true;
+        self
+    }
+}
+
 impl CaptureRequest {
     pub fn new(source: MidiSource, termination: CaptureTermination) -> Result<Self, AppError> {
         match termination {
@@ -99,7 +137,7 @@ pub fn select_source(sources: &[MidiSource], selector: &str) -> Result<MidiSourc
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureRequest, CaptureTermination, MidiSource};
+    use super::{CaptureRequest, CaptureTermination, MidiSource, PairedCaptureRequest};
 
     fn source() -> MidiSource {
         MidiSource {
@@ -119,5 +157,20 @@ mod tests {
         assert!(CaptureRequest::new(source(), CaptureTermination::DurationSeconds(1)).is_ok());
         assert!(CaptureRequest::new(source(), CaptureTermination::Ticks(0)).is_err());
         assert!(CaptureRequest::new(source(), CaptureTermination::DurationSeconds(0)).is_err());
+    }
+
+    #[test]
+    fn paired_capture_request_requires_distinct_sources_and_preserves_manual_mode() {
+        let other = MidiSource {
+            port_name: "return".to_owned(),
+            ..source()
+        };
+        assert!(
+            PairedCaptureRequest::new(source(), source(), CaptureTermination::Ticks(1)).is_err()
+        );
+        let request = PairedCaptureRequest::new(source(), other, CaptureTermination::Ticks(1))
+            .unwrap()
+            .manual_connect();
+        assert!(request.manual_connect);
     }
 }

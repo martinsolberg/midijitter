@@ -9,11 +9,16 @@ pub mod simulate;
 
 pub use analysis::{
     AnalysisOptions, AnalysisResult, AnalysisRow, AnomalyDetail, AnomalySummary, EventDisposition,
-    ExclusionCounts, IntervalDisposition, PeriodStatistics, PhaseStatistics, RollingPoint,
-    StartupSummary, analyze, is_clean_period, is_clean_phase, rolling_bpm,
+    ExclusionCounts, IntervalDisposition, LatencyStatistics, PairStatus, PairStatusCounts,
+    PairedAnalysisResult, PairedEvent as PairedAnalysisEvent, PairingResult, PeriodStatistics,
+    PhaseStatistics, RollingPoint, StartupSummary, analyze, analyze_paired, is_clean_period,
+    is_clean_phase, rolling_bpm,
 };
 pub use capture::{
-    AlsaTimestamp, CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition, MidiEvent,
-    PipeWireTimestamp, SourceMetadata, TimestampMetadata,
+    AlsaTimestamp, CaptureCompletion, CaptureDocument, CaptureFile, CapturedEvent,
+    CommonGraphMetadata, CompletionStatus, EnvironmentMetadata, GraphTiming, GraphTransition,
+    GraphTransitionKind, MidiEvent, PAIRED_FORMAT_VERSION, PairedCapture, PairedEvent,
+    PairedGraphTransition, PipeWireTimestamp, SourceMetadata, StreamRole, TimestampMetadata,
+    common_timestamp_ns,
 };
 pub use error::AppError;

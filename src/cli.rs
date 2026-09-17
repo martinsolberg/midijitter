@@ -5,7 +5,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crate::analysis::{AnalysisOptions, analyze};
 use crate::backend::alsa::AlsaRawBackend;
 use crate::backend::pipewire::PipeWireBackend;
-use crate::backend::{CaptureBackend, CaptureRequest, CaptureTermination, select_source};
+use crate::backend::{
+    CaptureBackend, CaptureRequest, CaptureTermination, PairedCaptureRequest, select_source,
+};
 use crate::output::{self, duration_s, timing_summary};
 use crate::{AppError, CaptureFile, MidiEvent};
 
@@ -83,6 +85,21 @@ enum Command {
         /// Capture files produced by `record`. Each file is re-analyzed.
         #[arg(num_args = 1..)]
         captures: Vec<PathBuf>,
+    },
+    /// Capture and compare a reference MIDI Clock with its returned path.
+    CompareLive {
+        /// Reference/source port selector, as shown by `devices`.
+        #[arg(long)]
+        reference: String,
+        /// Returned/source port selector, as shown by `devices`.
+        #[arg(long)]
+        returned: String,
+        /// Capture duration in seconds.
+        #[arg(long)]
+        duration: u64,
+        /// Destination paired capture file.
+        #[arg(long)]
+        output: PathBuf,
     },
     /// Print rolling tempo over a sliding window.
     Rolling {
@@ -167,6 +184,12 @@ pub fn run() -> Result<(), AppError> {
             output_dir,
         } => run_plot(capture, output_dir),
         Command::Compare { captures } => run_compare(captures),
+        Command::CompareLive {
+            reference,
+            returned,
+            duration,
+            output,
+        } => run_compare_live(reference, returned, duration, output),
         Command::Rolling { capture, window } => run_rolling(capture, window),
         Command::Simulate {
             bpm,
@@ -328,7 +351,7 @@ fn run_analyze(
     settle: String,
     startup_cadence: Option<usize>,
 ) -> Result<(), AppError> {
-    let capture_file = CaptureFile::read_from_file(&capture)?;
+    let document = crate::CaptureDocument::read_from_file(&capture)?;
     // The duration parser accepts "0" and rejects negatives itself.
     let settle_ns = crate::simulate::parse_duration_ns(&settle)? as i128;
     let options = AnalysisOptions {
@@ -336,29 +359,53 @@ fn run_analyze(
         startup_cadence,
         ..AnalysisOptions::default()
     };
-    if !capture_file.transitions.is_empty() {
-        let clocks = capture_file
-            .events
-            .iter()
-            .filter(|event| event.event == MidiEvent::Clock)
-            .count();
-        for warning in output::warnings(&capture_file, clocks) {
-            eprintln!("{warning}");
-        }
-        return Err(AppError::GraphRateTransitionUnsupported);
-    }
+    match document {
+        crate::CaptureDocument::V1(capture_file) => {
+            if !capture_file.transitions.is_empty() {
+                let clocks = capture_file
+                    .events
+                    .iter()
+                    .filter(|event| event.event == MidiEvent::Clock)
+                    .count();
+                for warning in output::warnings(&capture_file, clocks) {
+                    eprintln!("{warning}");
+                }
+                return Err(AppError::GraphRateTransitionUnsupported);
+            }
 
-    let analysis = analyze(&capture_file, options)?;
-    if json {
-        println!(
-            "{}",
-            output::json::format_json_report(&capture_file, &analysis)?
-        );
-    } else {
-        print!("{}", output::text::format_report(&capture_file, &analysis));
-    }
-    if let Some(csv_path) = csv {
-        output::csv::write_csv_report(&capture_file, &analysis, &csv_path)?;
+            let analysis = analyze(&capture_file, options)?;
+            if json {
+                println!(
+                    "{}",
+                    output::json::format_json_report(&capture_file, &analysis)?
+                );
+            } else {
+                print!("{}", output::text::format_report(&capture_file, &analysis));
+            }
+            if let Some(csv_path) = csv {
+                output::csv::write_csv_report(&capture_file, &analysis, &csv_path)?;
+            }
+        }
+        crate::CaptureDocument::V2(capture) => {
+            if csv.is_some() {
+                return Err(AppError::InvalidCapture(
+                    "--csv is not supported for paired captures; use --json or text output"
+                        .to_owned(),
+                ));
+            }
+            let analysis = crate::analyze_paired(&capture, options)?;
+            if json {
+                println!(
+                    "{}",
+                    output::json::format_paired_json_report(&capture, &analysis)?
+                );
+            } else {
+                print!(
+                    "{}",
+                    output::text::format_paired_report(&capture, &analysis)
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -385,6 +432,61 @@ fn run_plot(capture: PathBuf, output_dir: PathBuf) -> Result<(), AppError> {
 
 fn run_compare(captures: Vec<PathBuf>) -> Result<(), AppError> {
     print!("{}", output::compare::format_comparison(&captures)?);
+    Ok(())
+}
+
+fn run_compare_live(
+    reference: String,
+    returned: String,
+    duration: u64,
+    output: PathBuf,
+) -> Result<(), AppError> {
+    if duration == 0 {
+        return Err(AppError::InvalidCapture(
+            "compare-live --duration must be positive".to_owned(),
+        ));
+    }
+
+    let backend = PipeWireBackend;
+    let sources = backend.enumerate().map_err(|error| match error {
+        AppError::PipeWireUnavailable { detail } => AppError::PipeWireUnavailable {
+            detail: format!("cannot resolve --reference/--returned sources: {detail}"),
+        },
+        other => other,
+    })?;
+    let reference_source = select_source(&sources, &reference).map_err(|error| match error {
+        AppError::NoSource => AppError::InvalidCapture(
+            "compare-live requires both a reference and returned PipeWire source; no sources are available"
+                .to_owned(),
+        ),
+        other => other,
+    })?;
+    let returned_source = select_source(&sources, &returned).map_err(|error| match error {
+        AppError::NoSource => AppError::InvalidCapture(
+            "compare-live requires both a reference and returned PipeWire source; no sources are available"
+                .to_owned(),
+        ),
+        other => other,
+    })?;
+    let request = PairedCaptureRequest::new(
+        reference_source.clone(),
+        returned_source.clone(),
+        CaptureTermination::DurationSeconds(duration),
+    )?;
+
+    println!("Backend: PipeWire");
+    println!("Reference: {}", reference_source.display_name);
+    println!("Returned: {}", returned_source.display_name);
+    println!("Recording for {duration} s...");
+    let captured = backend.record_paired(request)?;
+    captured.write_to_file(&output)?;
+    let reloaded = crate::PairedCapture::read_from_file(&output)?;
+    let analysis = crate::analyze_paired(&reloaded, AnalysisOptions::default())?;
+    print!(
+        "{}",
+        output::text::format_paired_report(&reloaded, &analysis)
+    );
+    println!("\nSaved: {}", output.display());
     Ok(())
 }
 

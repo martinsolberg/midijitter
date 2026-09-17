@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
     fit::Fit,
@@ -6,7 +6,7 @@ use super::{
     statistics,
 };
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisResult {
     pub measured_bpm: f64,
     pub fitted_period_ns: f64,
@@ -19,7 +19,7 @@ pub struct AnalysisResult {
     pub rows: Vec<AnalysisRow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisRow {
     pub sequence: u64,
     pub timestamp_ns: i128,
@@ -37,7 +37,7 @@ pub struct AnalysisRow {
     pub phase_error_ns: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StartupSummary {
     pub transient_events: usize,
     pub zero_or_negative_backlog: usize,
@@ -47,21 +47,21 @@ pub struct StartupSummary {
     pub period_ns: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnomalyDetail {
     pub sequence: u64,
     pub timestamp_ns: i128,
     pub value_ns: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnomalySummary {
     pub count: usize,
     pub worst_phase: Option<AnomalyDetail>,
     pub worst_interval: Option<AnomalyDetail>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExclusionCounts {
     pub non_clock_events: usize,
     pub duplicate_events: usize,
@@ -73,7 +73,7 @@ pub struct ExclusionCounts {
     pub excluded_from_period_statistics: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhaseStatistics {
     pub mean_ns: f64,
     pub standard_deviation_ns: f64,
@@ -87,7 +87,7 @@ pub struct PhaseStatistics {
     pub peak_to_peak_ns: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PeriodStatistics {
     pub mean_interval_ns: f64,
     pub standard_deviation_ns: f64,

@@ -1,6 +1,7 @@
 mod fit;
 mod indexing;
 mod jitter;
+mod paired;
 pub mod rolling;
 mod statistics;
 
@@ -10,6 +11,10 @@ pub use indexing::{EventDisposition, IntervalDisposition};
 pub use jitter::{
     AnalysisResult, AnalysisRow, AnomalyDetail, AnomalySummary, ExclusionCounts, PeriodStatistics,
     PhaseStatistics, StartupSummary, is_clean_period, is_clean_phase,
+};
+pub use paired::{
+    LatencyStatistics, PairStatus, PairStatusCounts, PairedAnalysisResult, PairedEvent,
+    PairingResult, analyze_paired,
 };
 pub use rolling::{RollingPoint, rolling_bpm};
 

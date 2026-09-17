@@ -1,10 +1,11 @@
 use super::timing::normalize_pipewire_event_timestamps;
 use crate::backend::pipewire::timing::pipewire_event_position;
-use crate::backend::{CaptureRequest, CaptureTermination};
+use crate::backend::{CaptureRequest, CaptureTermination, PairedCaptureRequest};
 use crate::capture::MidiParser;
 use crate::{
-    AppError, CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition, PipeWireTimestamp,
-    SourceMetadata, TimestampMetadata,
+    AppError, CaptureCompletion, CaptureFile, CapturedEvent, CommonGraphMetadata, CompletionStatus,
+    EnvironmentMetadata, GraphTiming, GraphTransition, GraphTransitionKind, PairedCapture,
+    PairedGraphTransition, PipeWireTimestamp, SourceMetadata, TimestampMetadata,
 };
 use pipewire as pw;
 use pw::spa;
@@ -34,6 +35,33 @@ pub(super) struct CaptureData {
     last_timing: Option<(u32, u32, u32)>,
     first_cycle_position: Option<i64>,
     termination: CaptureTermination,
+}
+
+pub(super) struct PairedCaptureData {
+    reference_parser: MidiParser,
+    returned_parser: MidiParser,
+    reference_events: Vec<CapturedEvent>,
+    returned_events: Vec<CapturedEvent>,
+    clock_events: u64,
+    transitions: Vec<PairedGraphTransition>,
+    common_graph: Option<CommonGraphMetadata>,
+    termination: CaptureTermination,
+}
+
+pub(super) struct PairedCycleTiming {
+    pub clock_id: u64,
+    pub cycle_position: i64,
+    pub rate_num: u32,
+    pub rate_denom: u32,
+    pub quantum: u32,
+}
+
+struct EventTiming {
+    cycle_position: i64,
+    origin_position: i64,
+    rate_num: u32,
+    rate_denom: u32,
+    quantum: u32,
 }
 
 /// Thread-safe control block shared between the realtime process callback and
@@ -101,6 +129,144 @@ impl CaptureData {
                     };
                     let elapsed = i128::from(cycle_position) - i128::from(first);
                     elapsed >= i128::from(seconds) * i128::from(rate_denom) / i128::from(rate_num)
+                })
+            }
+        }
+    }
+}
+
+impl PairedCaptureData {
+    pub(super) fn new(termination: CaptureTermination, event_capacity: usize) -> Self {
+        Self {
+            reference_parser: MidiParser::default(),
+            returned_parser: MidiParser::default(),
+            reference_events: Vec::with_capacity(event_capacity),
+            returned_events: Vec::with_capacity(event_capacity),
+            clock_events: 0,
+            transitions: Vec::with_capacity(TRANSITION_CAPACITY),
+            common_graph: None,
+            termination,
+        }
+    }
+
+    pub(super) fn record_cycle(
+        &mut self,
+        control: &SharedControl,
+        reference: Option<&spa::sys::spa_pod_sequence>,
+        returned: Option<&spa::sys::spa_pod_sequence>,
+        cycle: PairedCycleTiming,
+    ) {
+        let PairedCycleTiming {
+            clock_id,
+            cycle_position,
+            rate_num,
+            rate_denom,
+            quantum,
+        } = cycle;
+        if rate_num == 0 || rate_denom == 0 || quantum == 0 {
+            control.request_stop(STOP_NEGOTIATION_FAILURE);
+            return;
+        }
+        let timing = GraphTiming {
+            rate_num,
+            rate_denom,
+            quantum,
+        };
+        let transition = match &self.common_graph {
+            None => Some(GraphTransitionKind::Initial),
+            Some(common) if common.clock_id != clock_id => Some(GraphTransitionKind::ClockChanged),
+            Some(common) if common.rate_num != rate_num || common.rate_denom != rate_denom => {
+                Some(GraphTransitionKind::RateChanged)
+            }
+            Some(common) if common.quantum != quantum => Some(GraphTransitionKind::QuantumChanged),
+            Some(_) => None,
+        };
+        if let Some(kind) = transition {
+            if self.transitions.len() == self.transitions.capacity() {
+                control.request_stop(STOP_OVERFLOW);
+                return;
+            }
+            if let Some(common) = &mut self.common_graph {
+                common.clock_id = clock_id;
+                common.rate_num = rate_num;
+                common.rate_denom = rate_denom;
+                common.quantum = quantum;
+            } else {
+                self.common_graph = Some(CommonGraphMetadata {
+                    clock_id,
+                    rate_num,
+                    rate_denom,
+                    quantum,
+                    origin_position: cycle_position,
+                });
+            }
+            self.transitions.push(PairedGraphTransition {
+                event_sequence: self.reference_events.len().max(self.returned_events.len()) as u64,
+                kind,
+                clock_id,
+                timing,
+            });
+        }
+        if control.stop_reason() != STOP_NONE {
+            return;
+        }
+        let origin = self
+            .common_graph
+            .as_ref()
+            .expect("initial timing recorded")
+            .origin_position;
+        for (sequence, parser, events) in [
+            (
+                reference,
+                &mut self.reference_parser,
+                &mut self.reference_events,
+            ),
+            (
+                returned,
+                &mut self.returned_parser,
+                &mut self.returned_events,
+            ),
+        ] {
+            if let Some(sequence) = sequence
+                && unsafe {
+                    record_spa_sequence_at_origin(
+                        sequence,
+                        &EventTiming {
+                            cycle_position,
+                            origin_position: origin,
+                            rate_num,
+                            rate_denom,
+                            quantum,
+                        },
+                        parser,
+                        events,
+                    )
+                }
+                .is_err()
+            {
+                control.request_stop(STOP_OVERFLOW);
+                return;
+            }
+        }
+        self.clock_events = self
+            .reference_events
+            .iter()
+            .chain(&self.returned_events)
+            .filter(|event| matches!(event.event, crate::MidiEvent::Clock))
+            .count() as u64;
+        if self.termination_reached(cycle_position) {
+            control.request_stop(STOP_COMPLETE);
+        }
+    }
+
+    fn termination_reached(&self, cycle_position: i64) -> bool {
+        match self.termination {
+            CaptureTermination::Ticks(target) => self.clock_events >= target * 2,
+            CaptureTermination::DurationSeconds(seconds) => {
+                self.common_graph.as_ref().is_some_and(|common| {
+                    i128::from(cycle_position) - i128::from(common.origin_position)
+                        >= i128::from(seconds) * i128::from(common.rate_denom)
+                            / i128::from(common.rate_num)
                 })
             }
         }
@@ -238,6 +404,76 @@ pub(super) fn finish_capture(
     })
 }
 
+pub(super) fn finish_paired_capture(
+    data: &mut PairedCaptureData,
+    control: &SharedControl,
+    interrupted: bool,
+    request: &PairedCaptureRequest,
+) -> Result<PairedCapture, AppError> {
+    let reason = control.take_error();
+    let status = if interrupted {
+        CompletionStatus::Interrupted
+    } else if control.stop_reason() == STOP_COMPLETE {
+        CompletionStatus::Complete
+    } else {
+        CompletionStatus::Failed
+    };
+    match control.stop_reason() {
+        STOP_COMPLETE => {}
+        STOP_SOURCE_GONE => return Err(AppError::PipeWireSourceDisappeared),
+        STOP_OVERFLOW => return Err(AppError::CaptureOverflow),
+        STOP_UNSUPPORTED_FORMAT => return Err(AppError::PipeWireUnsupportedControlFormat),
+        STOP_NEGOTIATION_FAILURE => {
+            return Err(AppError::PipeWireNegotiationFailed {
+                detail: "PipeWire reported an invalid graph rate or quantum".to_owned(),
+            });
+        }
+        STOP_TIMESTAMP_ERROR => return Err(AppError::TimestampArithmeticOverflow),
+        STOP_STREAM_ERROR => {
+            return Err(AppError::PipeWireNegotiationFailed {
+                detail: reason
+                    .unwrap_or_else(|| "PipeWire capture entered the error state".to_owned()),
+            });
+        }
+        STOP_NONE if interrupted => {}
+        _ => {
+            return Err(AppError::PipeWireNegotiationFailed {
+                detail: "PipeWire capture stopped before a bounded termination condition"
+                    .to_owned(),
+            });
+        }
+    }
+    let common_graph = data.common_graph.clone().ok_or(AppError::NoClockEvents)?;
+    if data.reference_events.is_empty() && data.returned_events.is_empty() {
+        return Err(AppError::NoClockEvents);
+    }
+    common_graph.validate()?;
+    Ok(PairedCapture {
+        format_version: crate::capture::PAIRED_FORMAT_VERSION,
+        backend: "pipewire".to_owned(),
+        reference: SourceMetadata {
+            identity: request.reference.stable_identity(),
+            display_name: request.reference.display_name.clone(),
+        },
+        returned: SourceMetadata {
+            identity: request.returned.stable_identity(),
+            display_name: request.returned.display_name.clone(),
+        },
+        timestamp_method: "PipeWire common graph position + event offset".to_owned(),
+        ppqn: 24,
+        application_version: env!("CARGO_PKG_VERSION").to_owned(),
+        environment: EnvironmentMetadata {
+            operating_system: std::env::consts::OS.to_owned(),
+            pipewire_version: None,
+        },
+        common_graph,
+        transitions: std::mem::take(&mut data.transitions),
+        completion: CaptureCompletion { status, reason },
+        reference_events: std::mem::take(&mut data.reference_events),
+        returned_events: std::mem::take(&mut data.returned_events),
+    })
+}
+
 /// Casts a raw data buffer to a SPA control sequence if its header looks valid.
 ///
 /// PipeWire can deliver MIDI either as `SPA_META_Control` metadata or as a
@@ -324,6 +560,81 @@ pub(super) unsafe fn record_spa_sequence(
         }
         Ok(())
     }
+}
+
+unsafe fn record_spa_sequence_at_origin(
+    sequence: &spa::sys::spa_pod_sequence,
+    timing: &EventTiming,
+    parser: &mut MidiParser,
+    events: &mut Vec<CapturedEvent>,
+) -> Result<(), AppError> {
+    unsafe {
+        let sequence_start = sequence as *const _ as *const u8;
+        let pod_size = sequence.pod.size as usize;
+        if pod_size < std::mem::size_of::<spa::sys::spa_pod_sequence_body>() {
+            return Err(AppError::InvalidCapture("invalid MIDI sequence".to_owned()));
+        }
+        let sequence_end = sequence_start.add(std::mem::size_of::<spa::sys::spa_pod>() + pod_size);
+        let mut cursor = sequence_start.add(std::mem::size_of::<spa::sys::spa_pod_sequence>());
+        while cursor < sequence_end {
+            if sequence_end.offset_from(cursor)
+                < std::mem::size_of::<spa::sys::spa_pod_control>() as isize
+            {
+                return Err(AppError::InvalidCapture("invalid MIDI sequence".to_owned()));
+            }
+            let event = cursor.cast::<spa::sys::spa_pod_control>();
+            let value_size = (*event).value.size as usize;
+            let payload_start = cursor.add(std::mem::size_of::<spa::sys::spa_pod_control>());
+            let payload_end = payload_start.add(value_size);
+            if payload_end > sequence_end {
+                return Err(AppError::InvalidCapture("invalid MIDI sequence".to_owned()));
+            }
+            if (*event).type_ == spa::sys::SPA_CONTROL_Midi {
+                let bytes = std::slice::from_raw_parts(payload_start, value_size);
+                record_control_bytes_at_origin(parser, events, timing, (*event).offset, bytes)?;
+            }
+            cursor = payload_end.add((8 - (value_size % 8)) % 8);
+        }
+        Ok(())
+    }
+}
+
+fn record_control_bytes_at_origin(
+    parser: &mut MidiParser,
+    events: &mut Vec<CapturedEvent>,
+    timing: &EventTiming,
+    event_offset: u32,
+    bytes: &[u8],
+) -> Result<(), AppError> {
+    let event_position = pipewire_event_position(timing.cycle_position, event_offset)?;
+    let timestamp_ns = crate::common_timestamp_ns(
+        event_position,
+        timing.origin_position,
+        timing.rate_num,
+        timing.rate_denom,
+    )?;
+    for &byte in bytes {
+        let Some(event) = parser.push(byte) else {
+            continue;
+        };
+        if events.len() == events.capacity() {
+            return Err(AppError::CaptureOverflow);
+        }
+        events.push(CapturedEvent {
+            sequence: events.len() as u64,
+            timestamp_ns,
+            event,
+            timestamp_metadata: TimestampMetadata::PipeWire(PipeWireTimestamp {
+                cycle_position: timing.cycle_position,
+                event_offset,
+                event_position,
+                rate_num: timing.rate_num,
+                rate_denom: timing.rate_denom,
+                quantum: timing.quantum,
+            }),
+        });
+    }
+    Ok(())
 }
 
 /// Shared per-cycle transport tail: stamps the first position, tracks graph
@@ -417,8 +728,10 @@ pub(super) fn record_control_bytes(
 
 #[cfg(test)]
 mod tests {
+    use crate::backend::CaptureTermination;
     use crate::backend::pipewire::common::{
-        STOP_COMPLETE, STOP_NONE, SharedControl, link_announcement_needed, record_control_bytes,
+        EventTiming, PairedCaptureData, STOP_COMPLETE, STOP_NONE, SharedControl,
+        link_announcement_needed, record_control_bytes, record_control_bytes_at_origin,
     };
     use crate::capture::MidiParser;
     use crate::{CapturedEvent, TimestampMetadata};
@@ -583,5 +896,83 @@ mod tests {
             result,
             Err(crate::AppError::TimestampArithmeticOverflow)
         ));
+    }
+
+    #[test]
+    fn paired_ingestion_uses_one_origin_for_same_and_cross_cycle_events() {
+        let mut reference_parser = MidiParser::default();
+        let mut returned_parser = MidiParser::default();
+        let mut reference = Vec::with_capacity(1);
+        let mut returned = Vec::with_capacity(1);
+        record_control_bytes_at_origin(
+            &mut reference_parser,
+            &mut reference,
+            &EventTiming {
+                cycle_position: 10_000,
+                origin_position: 10_000,
+                rate_num: 1,
+                rate_denom: 48_000,
+                quantum: 256,
+            },
+            37,
+            &[0xf8],
+        )
+        .unwrap();
+        record_control_bytes_at_origin(
+            &mut returned_parser,
+            &mut returned,
+            &EventTiming {
+                cycle_position: 9_900,
+                origin_position: 10_000,
+                rate_num: 1,
+                rate_denom: 48_000,
+                quantum: 256,
+            },
+            0,
+            &[0xf8],
+        )
+        .unwrap();
+        assert_eq!(reference[0].timestamp_ns, 770_833);
+        assert_eq!(returned[0].timestamp_ns, -2_083_333);
+    }
+
+    #[test]
+    fn paired_cycle_ingestion_records_typed_graph_transitions() {
+        let mut data = PairedCaptureData::new(CaptureTermination::Ticks(1), 4);
+        let control = SharedControl::new();
+        data.record_cycle(
+            &control,
+            None,
+            None,
+            super::PairedCycleTiming {
+                clock_id: 7,
+                cycle_position: 100,
+                rate_num: 1,
+                rate_denom: 48_000,
+                quantum: 256,
+            },
+        );
+        data.record_cycle(
+            &control,
+            None,
+            None,
+            super::PairedCycleTiming {
+                clock_id: 7,
+                cycle_position: 356,
+                rate_num: 1,
+                rate_denom: 48_000,
+                quantum: 512,
+            },
+        );
+        assert_eq!(data.transitions.len(), 2);
+        assert!(matches!(
+            data.transitions[0].kind,
+            crate::GraphTransitionKind::Initial
+        ));
+        assert!(matches!(
+            data.transitions[1].kind,
+            crate::GraphTransitionKind::QuantumChanged
+        ));
+        assert_eq!(data.common_graph.unwrap().origin_position, 100);
     }
 }

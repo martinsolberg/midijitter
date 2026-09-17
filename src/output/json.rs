@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::{AnalysisResult, AppError, CaptureFile};
+use crate::{AnalysisResult, AppError, CaptureFile, PairedAnalysisResult, PairedCapture};
 
 use super::{duration_s, timing_summary, transport_counts, warnings};
 
@@ -43,4 +43,18 @@ pub fn format_json_report(
         "warnings": warnings(capture, analysis.rows.len()),
     });
     Ok(serde_json::to_string_pretty(&report)?)
+}
+
+pub fn format_paired_json_report(
+    capture: &PairedCapture,
+    analysis: &PairedAnalysisResult,
+) -> Result<String, AppError> {
+    Ok(serde_json::to_string_pretty(&serde_json::json!({
+        "reference": capture.reference,
+        "returned": capture.returned,
+        "pairing": analysis.pairing,
+        "latency": analysis.latency,
+        "reference_analysis": analysis.reference,
+        "returned_analysis": analysis.returned,
+    }))?)
 }
