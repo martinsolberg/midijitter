@@ -9,8 +9,10 @@ pub mod simulate;
 
 pub use analysis::{
     AnalysisOptions, AnalysisResult, AnalysisRow, AnomalyDetail, AnomalySummary, EventDisposition,
-    ExclusionCounts, IntervalDisposition, PeriodStatistics, PhaseStatistics, RollingPoint,
-    StartupSummary, analyze, is_clean_period, is_clean_phase, rolling_bpm,
+    ExclusionCounts, IntervalDisposition, LatencyStatistics, PairStatus, PairedAnalysisResult,
+    PairedEvent as PairedAnalysisEvent, PairingResult, PeriodStatistics, PhaseStatistics,
+    RollingPoint, StartupSummary, analyze, analyze_paired, is_clean_period, is_clean_phase,
+    rolling_bpm,
 };
 pub use capture::{
     AlsaTimestamp, CaptureCompletion, CaptureDocument, CaptureFile, CapturedEvent,

@@ -1,4 +1,4 @@
-use crate::{AnalysisResult, CaptureFile};
+use crate::{AnalysisResult, CaptureFile, PairedAnalysisResult, PairedCapture};
 
 use super::{duration_s, timing_summary, transport_counts, warnings};
 
@@ -248,5 +248,34 @@ pub fn format_report(capture: &CaptureFile, analysis: &AnalysisResult) -> String
             .unwrap_or_else(|| "n/a".to_owned())
     ));
 
+    report
+}
+
+pub fn format_paired_report(capture: &PairedCapture, analysis: &PairedAnalysisResult) -> String {
+    let mut report = String::from("Paired MIDI Clock Analysis\n===========================\n");
+    report.push_str(&format!(
+        "\nReference               {}\n",
+        capture.reference.display_name
+    ));
+    report.push_str(&format!(
+        "Returned                {}\n",
+        capture.returned.display_name
+    ));
+    report.push_str(&format!(
+        "Alignment               {}{}\n",
+        if analysis.pairing.anchored {
+            "anchored"
+        } else {
+            "MAD lag"
+        },
+        format_args!(" ({} ticks)", analysis.pairing.lag_ticks)
+    ));
+    report.push_str(&format!(
+        "Pairs                   {}\n",
+        analysis.pairing.rows.len()
+    ));
+    let latency = &analysis.latency;
+    report.push_str("\nPath latency\n");
+    report.push_str(&format!("  Count                 {}\n  Mean                  {} ns\n  Median                {} ns\n  P95                   {} ns\n  Minimum              {} ns\n  Maximum              {} ns\n", latency.count, latency.mean_ns, latency.median_ns, latency.p95_ns, latency.minimum_ns, latency.maximum_ns));
     report
 }
