@@ -59,7 +59,7 @@ fn cadence_skips_duplicate_backlog_event_before_short_first_live_interval() {
         .iter()
         .find(|row| row.disposition == EventDisposition::Valid)
         .unwrap();
-    assert_eq!(anchor.sequence, 4);
+    assert_eq!(anchor.sequence, 5);
     assert_eq!(anchor.tick_index, 0);
     assert_eq!(
         analysis.rows[3].disposition,
