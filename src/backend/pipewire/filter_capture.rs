@@ -1,10 +1,11 @@
 use super::common::{
-    CaptureData, STOP_COMPLETE, STOP_NONE, STOP_SOURCE_GONE, STOP_STREAM_ERROR,
-    STOP_UNSUPPORTED_FORMAT, SharedControl, event_capacity, finish_capture,
-    link_announcement_needed, pipewire_unavailable, record_cycle, spa_sequence_from_bytes,
+    CaptureData, PairedCaptureData, PairedCycleTiming, STOP_COMPLETE, STOP_NEGOTIATION_FAILURE,
+    STOP_NONE, STOP_SOURCE_GONE, STOP_STREAM_ERROR, STOP_UNSUPPORTED_FORMAT, SharedControl,
+    event_capacity, finish_capture, finish_paired_capture, link_announcement_needed,
+    pipewire_unavailable, record_cycle, spa_sequence_from_bytes,
 };
-use crate::backend::{CaptureRequest, CaptureTermination};
-use crate::{AppError, CaptureFile};
+use crate::backend::{CaptureRequest, CaptureTermination, PairedCaptureRequest};
+use crate::{AppError, CaptureFile, PairedCapture};
 use pipewire as pw;
 use std::cell::Cell;
 use std::ffi::{CStr, CString, c_void};
@@ -57,6 +58,162 @@ struct FilterShared {
     data: *mut CaptureData,
     control: Arc<SharedControl>,
     port: Cell<*mut c_void>,
+}
+
+struct PairedFilterShared {
+    data: *mut PairedCaptureData,
+    control: Arc<SharedControl>,
+    reference_port: Cell<*mut c_void>,
+    returned_port: Cell<*mut c_void>,
+}
+
+pub(super) fn run_paired_filter_capture(
+    request: &PairedCaptureRequest,
+) -> Result<PairedCapture, AppError> {
+    let capacity = event_capacity(&request.termination)?;
+    pw::init();
+    let main_loop = pw::main_loop::MainLoopRc::new(None).map_err(pipewire_unavailable)?;
+    let context = pw::context::ContextRc::new(&main_loop, None).map_err(pipewire_unavailable)?;
+    let _core = context.connect_rc(None).map_err(pipewire_unavailable)?;
+    let raw_loop = unsafe { pw::sys::pw_main_loop_get_loop(main_loop.as_raw_ptr()) };
+    let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        signal_hook::flag::register(signal, Arc::clone(&interrupted))
+            .map_err(|error| AppError::SignalHandler(error.to_string()))?;
+    }
+    let data_ptr = Box::into_raw(Box::new(PairedCaptureData::new(
+        request.termination.clone(),
+        capacity,
+    )));
+    let control = Arc::new(SharedControl::new());
+    let shared = Box::into_raw(Box::new(PairedFilterShared {
+        data: data_ptr,
+        control: Arc::clone(&control),
+        reference_port: Cell::new(ptr::null_mut()),
+        returned_port: Cell::new(ptr::null_mut()),
+    }));
+    let props = unsafe { pw::sys::pw_properties_new(ptr::null()) };
+    if props.is_null() {
+        abandon_paired(data_ptr, shared);
+        return Err(AppError::PipeWireNegotiationFailed {
+            detail: "could not allocate PipeWire filter properties".to_owned(),
+        });
+    }
+    for (key, value) in [
+        ("media.type", "Midi"),
+        ("media.category", "Capture"),
+        ("media.role", "Music"),
+        ("node.name", "midijitter-paired-capture"),
+    ] {
+        set_str(props, key, value);
+    }
+    let name = CString::new("midijitter-paired-capture").expect("static filter name");
+    let mut events: pw::sys::pw_filter_events = unsafe { std::mem::zeroed() };
+    events.version = pw::sys::PW_VERSION_FILTER_EVENTS;
+    events.process = Some(on_paired_process);
+    events.state_changed = Some(on_paired_state_changed);
+    let filter = unsafe {
+        pw::sys::pw_filter_new_simple(
+            raw_loop,
+            name.as_ptr(),
+            props,
+            &events,
+            shared as *mut c_void,
+        )
+    };
+    if filter.is_null() {
+        abandon_paired(data_ptr, shared);
+        return Err(AppError::PipeWireNegotiationFailed {
+            detail: "PipeWire refused to create the paired MIDI filter".to_owned(),
+        });
+    }
+    let mut ports = Vec::new();
+    for (name, source) in [
+        ("reference", &request.reference),
+        ("returned", &request.returned),
+    ] {
+        let port_props = unsafe { pw::sys::pw_properties_new(ptr::null()) };
+        if port_props.is_null() {
+            destroy_paired(filter, shared);
+            drop(unsafe { Box::from_raw(data_ptr) });
+            return Err(AppError::PipeWireNegotiationFailed {
+                detail: "could not allocate paired filter port properties".to_owned(),
+            });
+        }
+        set_str(port_props, "format.dsp", "8 bit raw midi");
+        set_str(port_props, "port.name", name);
+        if !request.manual_connect {
+            set_str(port_props, "target.object", &source.port_id.to_string());
+        }
+        let port = unsafe {
+            pw::sys::pw_filter_add_port(
+                filter,
+                pw::sys::PW_DIRECTION_INPUT,
+                pw::sys::pw_filter_port_flags_PW_FILTER_PORT_FLAG_MAP_BUFFERS,
+                0,
+                port_props,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if port.is_null() {
+            destroy_paired(filter, shared);
+            drop(unsafe { Box::from_raw(data_ptr) });
+            return Err(AppError::PipeWireNegotiationFailed {
+                detail: format!("PipeWire refused to add paired {name} MIDI port"),
+            });
+        }
+        ports.push(port);
+    }
+    unsafe { &*shared }.reference_port.set(ports[0]);
+    unsafe { &*shared }.returned_port.set(ports[1]);
+    if unsafe {
+        pw::sys::pw_filter_connect(
+            filter,
+            pw::sys::pw_filter_flags_PW_FILTER_FLAG_RT_PROCESS,
+            ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        destroy_paired(filter, shared);
+        drop(unsafe { Box::from_raw(data_ptr) });
+        return Err(AppError::PipeWireNegotiationFailed {
+            detail: "PipeWire refused to connect the paired MIDI filter".to_owned(),
+        });
+    }
+    if request.manual_connect {
+        println!(
+            "Sinks: midijitter-paired-capture:reference and midijitter-paired-capture:returned"
+        );
+    }
+    let stop_loop = main_loop.clone();
+    let timer_control = Arc::clone(&control);
+    let interrupted_state = Arc::clone(&interrupted);
+    let started = Instant::now();
+    let liveness_bound = match request.termination {
+        CaptureTermination::DurationSeconds(seconds) => {
+            Some(Duration::from_secs(seconds) + LIVENESS_GRACE)
+        }
+        CaptureTermination::Ticks(_) => None,
+    };
+    let timer = main_loop.loop_().add_timer(move |_| {
+        if timer_control.stop_reason() != STOP_NONE || interrupted_state.load(Ordering::Acquire) {
+            stop_loop.quit();
+        } else if liveness_bound.is_some_and(|bound| started.elapsed() >= bound) {
+            timer_control.request_stop(STOP_COMPLETE);
+            stop_loop.quit();
+        }
+    });
+    timer.update_timer(
+        Some(Duration::from_millis(1)),
+        Some(Duration::from_millis(1)),
+    );
+    main_loop.run();
+    destroy_paired(filter, shared);
+    let interrupted = interrupted.load(Ordering::Acquire);
+    let mut data = unsafe { Box::from_raw(data_ptr) };
+    finish_paired_capture(&mut data, &control, interrupted, request)
 }
 
 pub(super) fn run_filter_capture(request: &CaptureRequest) -> Result<CaptureFile, AppError> {
@@ -258,6 +415,108 @@ fn destroy(filter: *mut pw::sys::pw_filter, shared: *mut FilterShared) {
     drop(unsafe { Box::from_raw(shared) });
 }
 
+fn abandon_paired(data: *mut PairedCaptureData, shared: *mut PairedFilterShared) {
+    drop(unsafe { Box::from_raw(data) });
+    drop(unsafe { Box::from_raw(shared) });
+}
+
+fn destroy_paired(filter: *mut pw::sys::pw_filter, shared: *mut PairedFilterShared) {
+    unsafe {
+        pw::sys::pw_filter_disconnect(filter);
+        pw::sys::pw_filter_destroy(filter);
+        drop(Box::from_raw(shared));
+    }
+}
+
+unsafe extern "C" fn on_paired_process(
+    data: *mut c_void,
+    position: *mut pw::spa::sys::spa_io_position,
+) {
+    if data.is_null() || position.is_null() {
+        return;
+    }
+    let shared = unsafe { &*(data as *const PairedFilterShared) };
+    let Ok(timing) = position_timing(unsafe { &*position }) else {
+        shared.control.request_stop(STOP_NEGOTIATION_FAILURE);
+        return;
+    };
+    let clock_id = u64::from(unsafe { (*position).clock.id });
+    let reference_port = shared.reference_port.get();
+    let returned_port = shared.returned_port.get();
+    let reference_buffer = if reference_port.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { pw::sys::pw_filter_dequeue_buffer(reference_port) }
+    };
+    let returned_buffer = if returned_port.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { pw::sys::pw_filter_dequeue_buffer(returned_port) }
+    };
+    let reference = if reference_buffer.is_null() {
+        None
+    } else {
+        unsafe { filter_sequence(reference_buffer) }
+    };
+    let returned = if returned_buffer.is_null() {
+        None
+    } else {
+        unsafe { filter_sequence(returned_buffer) }
+    };
+    if (!reference_buffer.is_null() && reference.is_none())
+        || (!returned_buffer.is_null() && returned.is_none())
+    {
+        shared.control.request_stop(STOP_UNSUPPORTED_FORMAT);
+    } else {
+        unsafe { &mut *shared.data }.record_cycle(
+            &shared.control,
+            reference,
+            returned,
+            PairedCycleTiming {
+                clock_id,
+                cycle_position: timing.cycle_ticks,
+                rate_num: timing.rate_num,
+                rate_denom: timing.rate_denom,
+                quantum: timing.quantum,
+            },
+        );
+    }
+    if !reference_buffer.is_null() {
+        unsafe { pw::sys::pw_filter_queue_buffer(reference_port, reference_buffer) };
+    }
+    if !returned_buffer.is_null() {
+        unsafe { pw::sys::pw_filter_queue_buffer(returned_port, returned_buffer) };
+    }
+}
+
+unsafe extern "C" fn on_paired_state_changed(
+    data: *mut c_void,
+    _old: pw::sys::pw_filter_state,
+    state: pw::sys::pw_filter_state,
+    error: *const std::os::raw::c_char,
+) {
+    if data.is_null() {
+        return;
+    }
+    let shared = unsafe { &*(data as *const PairedFilterShared) };
+    match state {
+        pw::sys::pw_filter_state_PW_FILTER_STATE_STREAMING => shared.control.mark_streamed(),
+        pw::sys::pw_filter_state_PW_FILTER_STATE_ERROR => {
+            let detail = if error.is_null() {
+                "PipeWire paired filter entered the error state".to_owned()
+            } else {
+                unsafe { CStr::from_ptr(error).to_string_lossy().into_owned() }
+            };
+            shared.control.set_error(detail);
+            shared.control.request_stop(STOP_STREAM_ERROR);
+        }
+        pw::sys::pw_filter_state_PW_FILTER_STATE_UNCONNECTED if shared.control.is_streamed() => {
+            shared.control.request_stop(STOP_SOURCE_GONE)
+        }
+        _ => {}
+    }
+}
+
 unsafe extern "C" fn on_process(data: *mut c_void, position: *mut pw::spa::sys::spa_io_position) {
     if data.is_null() {
         return;
@@ -447,5 +706,28 @@ mod tests {
         // the run cleanly with NoClockEvents instead of hanging.
         let result = super::run_filter_capture(&request);
         assert!(matches!(result, Err(crate::AppError::NoClockEvents)));
+    }
+
+    #[test]
+    #[ignore = "needs two live PipeWire MIDI sources"]
+    fn paired_filter_capture_smoke_test() {
+        use crate::backend::{CaptureTermination, MidiSource, PairedCaptureRequest};
+        let source = |name: &str, port_id| MidiSource {
+            display_name: name.to_owned(),
+            node_name: name.to_owned(),
+            port_name: "midi".to_owned(),
+            object_serial: None,
+            node_id: 1,
+            port_id,
+            alsa_device: None,
+        };
+        let request = PairedCaptureRequest::new(
+            source("reference", 1),
+            source("returned", 2),
+            CaptureTermination::DurationSeconds(1),
+        )
+        .unwrap();
+        let result = super::run_paired_filter_capture(&request);
+        assert!(result.is_ok() || matches!(result, Err(crate::AppError::NoClockEvents)));
     }
 }
