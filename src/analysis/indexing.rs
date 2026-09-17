@@ -150,6 +150,11 @@ pub(crate) fn find_live_anchor(
         .enumerate()
         .filter(|(_, event)| event.timestamp_ns >= boundary)
         .find_map(|(index, _)| {
+            let preceded_by_positive_interval =
+                index == 0 || events[index].timestamp_ns > events[index - 1].timestamp_ns;
+            if !preceded_by_positive_interval {
+                return None;
+            }
             let end = index.checked_add(startup_cadence)?;
             let candidate = events.get(index..=end)?;
             let plausible = candidate.windows(2).all(|pair| {
