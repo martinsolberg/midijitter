@@ -19,3 +19,7 @@ pub struct CapturedEvent {
     pub event: MidiEvent,
     pub timestamp_metadata: TimestampMetadata,
 }
+
+/// An event in one side of a v2 paired capture. The containing array supplies
+/// the stream role; the raw graph position is retained in the metadata.
+pub type PairedEvent = CapturedEvent;

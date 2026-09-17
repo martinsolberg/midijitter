@@ -1,6 +1,8 @@
 use midijitter::{
-    AlsaTimestamp, AppError, CaptureFile, CapturedEvent, EnvironmentMetadata, GraphTransition,
-    MidiEvent, PipeWireTimestamp, SourceMetadata, TimestampMetadata,
+    AlsaTimestamp, AppError, CaptureCompletion, CaptureDocument, CaptureFile, CapturedEvent,
+    CommonGraphMetadata, CompletionStatus, EnvironmentMetadata, GraphTiming, GraphTransition,
+    GraphTransitionKind, MidiEvent, PairedCapture, PairedGraphTransition, PipeWireTimestamp,
+    SourceMetadata, TimestampMetadata,
 };
 
 fn fixture_capture() -> CaptureFile {
@@ -152,4 +154,101 @@ fn validated_json_parser_rejects_ppqn_values_other_than_24() {
             Err(AppError::InvalidCapture(_))
         ));
     }
+}
+
+fn fixture_paired_capture() -> PairedCapture {
+    let common = CommonGraphMetadata {
+        clock_id: 7,
+        rate_num: 1,
+        rate_denom: 48_000,
+        quantum: 256,
+        origin_position: 10_000,
+    };
+    let origin_position = common.origin_position;
+    let rate_num = common.rate_num;
+    let rate_denom = common.rate_denom;
+    let event = |sequence, position| CapturedEvent {
+        sequence,
+        timestamp_ns: (i128::from(position - origin_position)
+            * i128::from(rate_num)
+            * 1_000_000_000)
+            / i128::from(rate_denom),
+        event: MidiEvent::Clock,
+        timestamp_metadata: TimestampMetadata::PipeWire(PipeWireTimestamp {
+            cycle_position: position - 10,
+            event_offset: 10,
+            event_position: position,
+            rate_num,
+            rate_denom,
+            quantum: 256,
+        }),
+    };
+    PairedCapture {
+        format_version: 2,
+        backend: "pipewire".to_owned(),
+        reference: SourceMetadata {
+            identity: "ref".to_owned(),
+            display_name: "Reference".to_owned(),
+        },
+        returned: SourceMetadata {
+            identity: "ret".to_owned(),
+            display_name: "Returned".to_owned(),
+        },
+        timestamp_method: "common-graph-origin".to_owned(),
+        ppqn: 24,
+        application_version: "0.1.0".to_owned(),
+        environment: EnvironmentMetadata {
+            operating_system: "test".to_owned(),
+            pipewire_version: None,
+        },
+        common_graph: common,
+        transitions: vec![PairedGraphTransition {
+            event_sequence: 0,
+            kind: GraphTransitionKind::Initial,
+            clock_id: 7,
+            timing: GraphTiming {
+                rate_num: 1,
+                rate_denom: 48_000,
+                quantum: 256,
+            },
+        }],
+        completion: CaptureCompletion {
+            status: CompletionStatus::Complete,
+            reason: None,
+        },
+        reference_events: vec![event(1, 10_000)],
+        returned_events: vec![event(1, 10_048)],
+    }
+}
+
+#[test]
+fn paired_capture_round_trip_dispatches_as_v2() {
+    let capture = fixture_paired_capture();
+    let json = serde_json::to_string(&capture).unwrap();
+    assert_eq!(PairedCapture::from_json_str(&json).unwrap(), capture);
+    assert_eq!(
+        CaptureDocument::from_json_str(&json).unwrap(),
+        CaptureDocument::V2(capture)
+    );
+}
+
+#[test]
+fn paired_capture_rejects_event_not_relative_to_common_origin() {
+    let mut capture = fixture_paired_capture();
+    capture.returned_events[0].timestamp_ns += 1;
+    assert!(matches!(
+        capture.validate(),
+        Err(AppError::InconsistentCommonTimebase(message))
+            if message == "event timestamp is not relative to the common origin"
+    ));
+}
+
+#[test]
+fn capture_document_dispatch_preserves_v1() {
+    let capture = fixture_capture();
+    let json = serde_json::to_string(&capture).unwrap();
+    assert_eq!(
+        CaptureDocument::from_json_str(&json).unwrap(),
+        CaptureDocument::V1(capture)
+    );
 }

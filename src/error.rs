@@ -8,6 +8,9 @@ pub enum AppError {
     #[error("invalid capture: {0}")]
     InvalidCapture(String),
 
+    #[error("inconsistent common capture timebase: {0}")]
+    InconsistentCommonTimebase(String),
+
     #[error("invalid capture JSON: {0}")]
     CaptureJson(#[from] serde_json::Error),
 
