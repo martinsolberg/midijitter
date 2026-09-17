@@ -84,6 +84,20 @@ or connect them in a patchbay such as `qpwgraph`. The app prints
 `Link active: recording started.` once the link streams. Recording ends on
 its own after `--duration`, or cleanly on `Ctrl-C`.
 
+### Raw ALSA capture
+
+```bash
+midijitter devices --backend alsa-raw
+```
+
+```bash
+midijitter record \
+  --backend alsa-raw \
+  --source hw:2,0,0 \
+  --duration 60 \
+  --output alsa.json
+```
+
 ### Analyze
 
 ```bash
