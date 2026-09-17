@@ -143,6 +143,16 @@ impl PairedCapture {
                 ));
             }
         }
+        if self.reference_events.is_empty() {
+            return Err(AppError::InvalidCapture(
+                "paired reference stream must contain at least one event".to_owned(),
+            ));
+        }
+        if self.returned_events.is_empty() {
+            return Err(AppError::InvalidCapture(
+                "paired returned stream must contain at least one event".to_owned(),
+            ));
+        }
         validate_paired_events(&self.reference_events, &self.common_graph)?;
         validate_paired_events(&self.returned_events, &self.common_graph)?;
         Ok(())
@@ -189,12 +199,9 @@ fn validate_paired_events(
                 "paired events must use PipeWire timestamps".to_owned(),
             ));
         };
-        if timestamp.rate_num != common.rate_num
-            || timestamp.rate_denom != common.rate_denom
-            || timestamp.quantum != common.quantum
-        {
-            return Err(AppError::InconsistentCommonTimebase(
-                "event timing differs from common graph timing".to_owned(),
+        if timestamp.rate_num == 0 || timestamp.rate_denom == 0 || timestamp.quantum == 0 {
+            return Err(AppError::InvalidCapture(
+                "paired event graph rate and quantum must be positive".to_owned(),
             ));
         }
         let expected = timestamp
@@ -202,9 +209,9 @@ fn validate_paired_events(
             .checked_sub(common.origin_position)
             .ok_or(AppError::TimestampArithmeticOverflow)?;
         let expected_ns = i128::from(expected)
-            .checked_mul(i128::from(common.rate_num))
+            .checked_mul(i128::from(timestamp.rate_num))
             .and_then(|value| value.checked_mul(1_000_000_000))
-            .map(|value| value / i128::from(common.rate_denom))
+            .map(|value| value / i128::from(timestamp.rate_denom))
             .ok_or(AppError::TimestampArithmeticOverflow)?;
         if event.timestamp_ns != expected_ns {
             return Err(AppError::InconsistentCommonTimebase(

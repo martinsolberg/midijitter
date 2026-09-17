@@ -1,7 +1,7 @@
 use crate::{AppError, CapturedEvent};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventDisposition {
     Valid,
     StartupTransient,
@@ -9,7 +9,7 @@ pub enum EventDisposition {
     Anomalous,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IntervalDisposition {
     Normal,
     Missing { count: u32 },

@@ -1,7 +1,9 @@
 use midijitter::analysis::{PairStatus, analyze_paired};
+use midijitter::output::text::format_paired_report;
 use midijitter::{
-    CaptureCompletion, CommonGraphMetadata, CompletionStatus, EnvironmentMetadata, MidiEvent,
-    PairedCapture, PipeWireTimestamp, SourceMetadata, TimestampMetadata,
+    CaptureCompletion, CommonGraphMetadata, CompletionStatus, EnvironmentMetadata, GraphTiming,
+    GraphTransitionKind, MidiEvent, PairedCapture, PairedGraphTransition, PipeWireTimestamp,
+    SourceMetadata, TimestampMetadata,
 };
 
 fn capture(reference: &[i128], returned: &[i128]) -> PairedCapture {
@@ -192,7 +194,46 @@ fn ambiguous_multi_period_delay_is_rejected() {
 fn serialized_and_immediate_structured_results_are_equivalent() {
     let result = analyze_paired(&regular(37), Default::default()).unwrap();
     let serialized = serde_json::to_string(&result).unwrap();
-    let immediate = serde_json::to_value(&result).unwrap();
-    let reloaded: serde_json::Value = serde_json::from_str(&serialized).unwrap();
-    assert_eq!(immediate, reloaded);
+    let reloaded: midijitter::PairedAnalysisResult = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(result, reloaded);
+}
+
+#[test]
+fn interrupted_capture_is_rejected_by_paired_analysis() {
+    let mut paired = regular(37);
+    paired.completion.status = CompletionStatus::Interrupted;
+    paired.completion.reason = Some("SIGINT".to_owned());
+    let error = analyze_paired(&paired, Default::default()).unwrap_err();
+    assert!(error.to_string().contains("complete capture"));
+}
+
+#[test]
+fn graph_timing_transitions_are_structurally_valid_but_rejected_for_analysis() {
+    let mut paired = regular(37);
+    paired.transitions.push(PairedGraphTransition {
+        event_sequence: 12,
+        kind: GraphTransitionKind::RateChanged,
+        clock_id: 1,
+        timing: GraphTiming {
+            rate_num: 1,
+            rate_denom: 2_000_000_000,
+            quantum: 256,
+        },
+    });
+    paired.validate().unwrap();
+    assert!(matches!(
+        analyze_paired(&paired, Default::default()),
+        Err(midijitter::AppError::GraphRateTransitionUnsupported)
+    ));
+}
+
+#[test]
+fn paired_text_report_explains_status_counts_and_resynchronization() {
+    let result = analyze_paired(&regular(37), Default::default()).unwrap();
+    let report = format_paired_report(&regular(37), &result);
+    assert!(report.contains("Pairing status"));
+    assert!(report.contains("Valid"));
+    assert!(report.contains("Missing reference"));
+    assert!(report.contains("Resynchronization"));
+    assert!(report.contains("Candidate lags"));
 }

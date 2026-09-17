@@ -274,6 +274,38 @@ pub fn format_paired_report(capture: &PairedCapture, analysis: &PairedAnalysisRe
         "Pairs                   {}\n",
         analysis.pairing.rows.len()
     ));
+    let counts = &analysis.pairing.status_counts;
+    report.push_str("\nPairing status\n");
+    report.push_str(&format!("  Valid                 {}\n", counts.valid));
+    report.push_str(&format!(
+        "  Missing reference     {}\n",
+        counts.missing_reference
+    ));
+    report.push_str(&format!(
+        "  Missing returned      {}\n",
+        counts.missing_returned
+    ));
+    report.push_str(&format!(
+        "  Reference anomalous   {}\n",
+        counts.reference_anomalous
+    ));
+    report.push_str(&format!(
+        "  Returned anomalous    {}\n",
+        counts.returned_anomalous
+    ));
+    report.push_str(&format!(
+        "  Both anomalous        {}\n",
+        counts.both_anomalous
+    ));
+    report.push_str(&format!(
+        "\nResynchronization      {}\nCandidate lags         {:?}\n",
+        if analysis.pairing.anchored {
+            "anchored"
+        } else {
+            "MAD lag"
+        },
+        analysis.pairing.candidate_lags
+    ));
     let latency = &analysis.latency;
     report.push_str("\nPath latency\n");
     report.push_str(&format!("  Count                 {}\n  Mean                  {} ns\n  Median                {} ns\n  P95                   {} ns\n  Minimum              {} ns\n  Maximum              {} ns\n", latency.count, latency.mean_ns, latency.median_ns, latency.p95_ns, latency.minimum_ns, latency.maximum_ns));

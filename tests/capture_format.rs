@@ -233,6 +233,62 @@ fn paired_capture_round_trip_dispatches_as_v2() {
 }
 
 #[test]
+fn paired_capture_preserves_event_timing_transitions() {
+    let mut capture = fixture_paired_capture();
+    capture.transitions.push(PairedGraphTransition {
+        event_sequence: 1,
+        kind: GraphTransitionKind::QuantumChanged,
+        clock_id: 7,
+        timing: GraphTiming {
+            rate_num: 1,
+            rate_denom: 96_000,
+            quantum: 512,
+        },
+    });
+    let timestamp = match &mut capture.returned_events[0].timestamp_metadata {
+        TimestampMetadata::PipeWire(timestamp) => timestamp,
+        TimestampMetadata::Alsa(_) => panic!("test fixture carries PipeWire timestamps"),
+    };
+    timestamp.rate_denom = 96_000;
+    timestamp.quantum = 512;
+    timestamp.event_position = 58_000;
+    capture.returned_events[0].timestamp_ns = 500_000_000;
+
+    capture.validate().unwrap();
+    let json = serde_json::to_string(&capture).unwrap();
+    assert_eq!(PairedCapture::from_json_str(&json).unwrap(), capture);
+}
+
+#[test]
+fn paired_capture_rejects_empty_streams_with_actionable_errors() {
+    let mut capture = fixture_paired_capture();
+    capture.reference_events.clear();
+    assert!(matches!(
+        capture.validate(),
+        Err(AppError::InvalidCapture(message))
+            if message == "paired reference stream must contain at least one event"
+    ));
+
+    let mut capture = fixture_paired_capture();
+    capture.returned_events.clear();
+    assert!(matches!(
+        capture.validate(),
+        Err(AppError::InvalidCapture(message))
+            if message == "paired returned stream must contain at least one event"
+    ));
+}
+
+#[test]
+fn interrupted_paired_capture_round_trips_but_is_not_analysis_eligible() {
+    let mut capture = fixture_paired_capture();
+    capture.completion.status = CompletionStatus::Interrupted;
+    capture.completion.reason = Some("SIGINT".to_owned());
+    let json = serde_json::to_string(&capture).unwrap();
+    let reloaded = PairedCapture::from_json_str(&json).unwrap();
+    assert_eq!(reloaded, capture);
+}
+
+#[test]
 fn paired_capture_rejects_event_not_relative_to_common_origin() {
     let mut capture = fixture_paired_capture();
     capture.returned_events[0].timestamp_ns += 1;

@@ -13,7 +13,8 @@ pub use jitter::{
     PhaseStatistics, StartupSummary, is_clean_period, is_clean_phase,
 };
 pub use paired::{
-    LatencyStatistics, PairStatus, PairedAnalysisResult, PairedEvent, PairingResult, analyze_paired,
+    LatencyStatistics, PairStatus, PairStatusCounts, PairedAnalysisResult, PairedEvent,
+    PairingResult, analyze_paired,
 };
 pub use rolling::{RollingPoint, rolling_bpm};
 

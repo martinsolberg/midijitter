@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     AppError, CaptureFile, CapturedEvent, CompletionStatus, EventDisposition, MidiEvent,
@@ -9,7 +9,7 @@ use crate::{
 
 use super::{AnalysisOptions, AnalysisResult, analyze};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PairStatus {
     Valid,
@@ -20,7 +20,7 @@ pub enum PairStatus {
     BothAnomalous,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PairedEvent {
     pub tick_index: i64,
     pub reference: Option<crate::AnalysisRow>,
@@ -29,15 +29,26 @@ pub struct PairedEvent {
     pub latency_ns: Option<i128>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PairStatusCounts {
+    pub valid: usize,
+    pub missing_reference: usize,
+    pub missing_returned: usize,
+    pub reference_anomalous: usize,
+    pub returned_anomalous: usize,
+    pub both_anomalous: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PairingResult {
     pub rows: Vec<PairedEvent>,
     pub lag_ticks: i64,
     pub anchored: bool,
     pub candidate_lags: Vec<i64>,
+    pub status_counts: PairStatusCounts,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatencyStatistics {
     pub count: usize,
     pub mean_ns: i128,
@@ -48,7 +59,7 @@ pub struct LatencyStatistics {
     pub standard_deviation_ns: i128,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PairedAnalysisResult {
     pub reference: AnalysisResult,
     pub returned: AnalysisResult,
@@ -80,6 +91,7 @@ pub fn analyze_paired(
     let returned = analyze(&returned_capture, options)?;
     let (lag_ticks, anchored, candidates) = select_lag(capture, &reference, &returned)?;
     let rows = pair_rows(&reference, &returned, lag_ticks);
+    let status_counts = count_statuses(&rows);
     let values: Vec<_> = rows
         .iter()
         .filter_map(|row| {
@@ -101,9 +113,32 @@ pub fn analyze_paired(
             lag_ticks,
             anchored,
             candidate_lags: candidates,
+            status_counts,
         },
         latency: summarize_latency(&values),
     })
+}
+
+fn count_statuses(rows: &[PairedEvent]) -> PairStatusCounts {
+    let mut counts = PairStatusCounts {
+        valid: 0,
+        missing_reference: 0,
+        missing_returned: 0,
+        reference_anomalous: 0,
+        returned_anomalous: 0,
+        both_anomalous: 0,
+    };
+    for row in rows {
+        match row.status {
+            PairStatus::Valid => counts.valid += 1,
+            PairStatus::MissingReference => counts.missing_reference += 1,
+            PairStatus::MissingReturned => counts.missing_returned += 1,
+            PairStatus::ReferenceAnomalous => counts.reference_anomalous += 1,
+            PairStatus::ReturnedAnomalous => counts.returned_anomalous += 1,
+            PairStatus::BothAnomalous => counts.both_anomalous += 1,
+        }
+    }
+    counts
 }
 
 fn single_capture(capture: &PairedCapture, events: &[CapturedEvent], name: &str) -> CaptureFile {
