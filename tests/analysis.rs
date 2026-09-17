@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use midijitter::{AnalysisOptions, AppError, CaptureFile, analyze};
+use midijitter::{AnalysisOptions, AppError, CaptureFile, EventDisposition, analyze};
 
 fn load_fixture(name: &str) -> CaptureFile {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -184,6 +184,38 @@ fn duplicate_only_intervals_are_rejected_without_panicking() {
         Err(AppError::InvalidCapture(message))
             if message == "clock analysis requires a normal one-tick interval"
     ));
+}
+
+#[test]
+fn cadence_skips_duplicate_backlog_event_before_short_first_live_interval() {
+    let mut timestamps = vec![0_i128; 4];
+    timestamps.push(16_500_000);
+    let mut time = 36_500_000_i128;
+    for _ in 0..16 {
+        timestamps.push(time);
+        time += 20_000_000;
+    }
+    let analysis = analyze(
+        &capture_with_clock_timestamps(&timestamps),
+        AnalysisOptions {
+            startup_cadence: Some(8),
+            ..AnalysisOptions::default()
+        },
+    )
+    .unwrap();
+
+    let anchor = analysis
+        .rows
+        .iter()
+        .find(|row| row.disposition == EventDisposition::Valid)
+        .unwrap();
+    assert_eq!(anchor.sequence, 5);
+    assert_eq!(anchor.tick_index, 0);
+    assert_eq!(
+        analysis.rows[3].disposition,
+        EventDisposition::StartupTransient
+    );
+    assert!(analysis.period.minimum_interval_ns > 19_000_000.0);
 }
 
 #[test]
