@@ -2,6 +2,7 @@
 name = "midijitter"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 alsa = "0.12.1"
