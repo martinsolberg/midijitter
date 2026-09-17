@@ -38,7 +38,7 @@ The essential test shape is:
 ```rust
 #[test]
 fn cadence_skips_duplicate_backlog_event_before_short_first_live_interval() {
-    let mut timestamps = vec![0_i128; 3];
+    let mut timestamps = vec![0_i128; 4];
     timestamps.push(16_500_000);
     let mut time = 36_500_000_i128;
     for _ in 0..16 {
@@ -47,7 +47,10 @@ fn cadence_skips_duplicate_backlog_event_before_short_first_live_interval() {
     }
     let analysis = analyze(
         &capture_with_clock_timestamps(&timestamps),
-        AnalysisOptions::default(),
+        AnalysisOptions {
+            startup_cadence: Some(8),
+            ..AnalysisOptions::default()
+        },
     )
     .unwrap();
 
