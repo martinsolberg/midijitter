@@ -1,14 +1,17 @@
 # midijitter
 
-A native Linux CLI tool for measuring and analyzing timing jitter in MIDI Clock
-streams. It captures MIDI 1.0 Timing Clock messages (`0xF8`, 24 PPQN) with
-kernel/graph timing, fits an ideal clock, and reports phase and period jitter.
+This project is an experimental, vibe coded Linux CLI tool for measuring and analyzing
+timing jitter in MIDI Clock streams. It captures MIDI 1.0 Timing Clock messages 
+(`0xF8`, 24 PPQN) with kernel/graph timing, fits an ideal clock, and reports
+phase and period jitter.
 
 midijitter is an **engineering and benchmarking tool**, not a general MIDI
 utility. It measures the timing stability of MIDI Clock events as presented at
 a specific Linux measurement boundary — by default, the PipeWire application
-boundary. It does not measure audible timing performance, and it never infers
-"good" or "bad" from jitter numbers.
+boundary. 
+
+Be advised that this tool has been developed without in-depth knowledge of neither 
+MIDI protocol implementation nor Rust programming.
 
 ## What it measures
 
@@ -52,49 +55,7 @@ midijitter devices                        # PipeWire sources (default)
 midijitter devices --backend alsa-raw     # ALSA RawMIDI devices (hw:card,device,subdevice)
 ```
 
-### Record MIDI Clock
-
-```bash
-midijitter record \
-  --source "Scarlett 18i20 MIDI" \
-  --duration 60 \
-  --output capture.json
-```
-
-Exactly one of `--duration <seconds>` or `--ticks <count>` is required.
-`Ctrl-C` ends the capture cleanly and still writes a valid partial file.
-
-ALSA reference capture:
-
-```bash
-midijitter record \
-  --backend alsa-raw \
-  --source hw:2,0,0 \
-  --duration 60 \
-  --output alsa.json
-```
-
-Timestamped RawMIDI reads are preferred; if unsupported, capture fails unless
-you pass `--allow-userspace-timestamps`, which is loudly labeled as userspace
-timestamping and never presented as equivalent to kernel timestamping.
-
-### PipeWire capture
-
-```bash
-midijitter record \
-  --source "Scarlett 18i20 USB MIDI 1 (capture)" \
-  --duration 60 \
-  --output capture.json
-```
-
-PipeWire capture uses `pw_filter`, mirroring `pw-mididump`. Event timing comes
-from the graph position (`spa_io_position`) delivered with each process cycle
-plus the event offset, producing the graph-position timestamped capture format.
-
-### Manual PipeWire connection
-
-If WirePlumber on your system cannot auto-link MIDI ports, expose a PipeWire
-MIDI sink and link it yourself.
+### Manual PipeWire capture
 
 1. Find the source port id (ids shift between sessions, always re-check):
 
