@@ -155,6 +155,79 @@ fn analyze_json_output_is_machine_readable() {
 }
 
 #[test]
+fn analyze_dispatches_v2_documents_and_rejects_deferred_csv_output() {
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fixture_capture("perfect-120")).expect("fixture should parse");
+    value["format_version"] = serde_json::json!(2);
+    value["backend"] = serde_json::json!("pipewire");
+    value["reference"] = serde_json::json!({
+        "identity": "reference",
+        "display_name": "Reference"
+    });
+    value["returned"] = serde_json::json!({
+        "identity": "returned",
+        "display_name": "Returned"
+    });
+    value["common_graph"] = serde_json::json!({
+        "clock_id": 1,
+        "rate_num": 1,
+        "rate_denom": 48000,
+        "quantum": 256,
+        "origin_position": 0
+    });
+    value["transitions"] = serde_json::json!([]);
+    value["completion"] = serde_json::json!({ "status": "complete", "reason": null });
+    value["reference_events"] = value["events"].clone();
+    value["returned_events"] = value["events"].clone();
+    value.as_object_mut().unwrap().remove("source");
+    value.as_object_mut().unwrap().remove("events");
+    for events in ["reference_events", "returned_events"] {
+        for event in value[events].as_array_mut().unwrap() {
+            event["timestamp_ns"] = serde_json::json!(0);
+            event["timestamp_metadata"]["pipewire"]["event_position"] = serde_json::json!(0);
+        }
+    }
+    let capture = write_temp_file(
+        "paired-dispatch.json",
+        &serde_json::to_string(&value).expect("paired fixture should serialize"),
+    );
+    let csv = temp_path("paired-dispatch.csv");
+    let output = binary()
+        .args([
+            "analyze",
+            &capture.to_string_lossy(),
+            "--csv",
+            &csv.to_string_lossy(),
+        ])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not supported for paired captures"));
+}
+
+#[test]
+fn compare_live_rejects_zero_duration_before_connecting_to_pipewire() {
+    let output = binary()
+        .args([
+            "compare-live",
+            "--reference",
+            "reference",
+            "--returned",
+            "returned",
+            "--duration",
+            "0",
+            "--output",
+            &temp_path("paired-zero.json").to_string_lossy(),
+        ])
+        .output()
+        .expect("midijitter binary should run");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--duration must be positive"));
+}
+
+#[test]
 fn analyze_startup_cadence_defaults_for_pipewire_and_can_be_disabled() {
     let capture = temp_path("perfect-120-startup.json");
     let pipewire_capture = fixture_capture("perfect-120")

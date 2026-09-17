@@ -242,6 +242,13 @@ impl CaptureDocument {
         })?;
         Self::from_json_str(&input)
     }
+
+    pub fn write_to_file(&self, path: &std::path::Path) -> Result<(), AppError> {
+        match self {
+            Self::V1(capture) => capture.write_to_file(path),
+            Self::V2(capture) => capture.write_to_file(path),
+        }
+    }
 }
 
 /// Convert a raw PipeWire graph event position into nanoseconds relative to

@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn paired_capture_request_requires_distinct_sources_and_preserves_manual_mode() {
         let other = MidiSource {
-            port_id: 3,
+            port_name: "return".to_owned(),
             ..source()
         };
         assert!(

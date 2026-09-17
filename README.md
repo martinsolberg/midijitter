@@ -131,6 +131,33 @@ midijitter analyze capture.json --json       # machine-readable JSON
 midijitter analyze capture.json --csv out.csv
 ```
 
+`analyze` detects the capture format from `format_version`: v1 files use the
+existing single-stream report, while v2 paired files produce a paired text or
+JSON report. Pair CSV output and paired plots are intentionally deferred.
+
+### Compare a live round-trip
+
+```bash
+midijitter compare-live \
+  --reference "DAW MIDI Clock" \
+  --returned "Interface MIDI In" \
+  --duration 60 \
+  --output paired.json
+```
+
+This PipeWire-only command resolves both selectors from the same `devices`
+list, rejects an identical source selection, and records both inputs through
+one filter process callback. The reference and returned events therefore share
+one PipeWire graph clock and one common timestamp origin; they are not
+timestamped or aligned in separate captures. The completed v2 capture is saved,
+reloaded, and then passed to the same paired analyzer used by offline
+`analyze`.
+
+The topology is two MIDI input ports (`reference` and `returned`) on the
+`midijitter-paired-capture` filter. Use stable identities when display names are
+ambiguous. A disconnected source or unavailable PipeWire daemon is reported as
+an actionable command error rather than being treated as a valid comparison.
+
 The report includes measured BPM, fitted clock period, phase jitter (RMS, σ,
 mean/median absolute, P95/P99, min/max, peak-to-peak), period jitter, and
 counts of missing/duplicate/anomalous clocks. Startup classification and
